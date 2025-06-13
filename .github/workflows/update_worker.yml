@@ -43,9 +43,12 @@ jobs:
 
       - name: 提交并推送变更
         if: env.updated == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
           git add _worker.js version.txt
           git commit -m "自动同步 _worker.js，上游版本 $(cat version.txt)"
           git push
