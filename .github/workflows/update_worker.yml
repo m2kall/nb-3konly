@@ -3,15 +3,20 @@ name: Daily Sync _worker.js from zizifn/edgetunnel
 on:
   schedule:
     - cron: '0 0 * * *'  # 每天 UTC 零点运行
-  workflow_dispatch:      # 支持手动触发
+  workflow_dispatch:
+
+permissions:
+  contents: write  # 🔑 允许写入权限（必须！）
 
 jobs:
   sync-worker:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 检出当前仓库代码
+      - name: 检出当前仓库代码（使用 GITHUB_TOKEN 支持推送）
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 获取上游最新 commit SHA
         id: get_sha
@@ -46,9 +51,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add _worker.js version.txt
           git commit -m "自动同步 _worker.js，上游版本 $(cat version.txt)"
-          git push
+          git push origin HEAD
