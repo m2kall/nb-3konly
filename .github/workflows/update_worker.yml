@@ -2,7 +2,7 @@ name: Daily Sync _worker.js from zizifn/edgetunnel
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 每天 UTC 零点运行
+    
   workflow_dispatch:
 
 permissions:
