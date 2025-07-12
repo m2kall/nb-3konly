@@ -11,7 +11,7 @@ let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 let proxyIP = '';
 
 // 控制订阅页面是否隐藏，设置为 true 则隐藏，默认是 false (不隐藏)
-let 隐藏 = true; // <--- Changed to true for testing purposes
+let 隐藏 = false; // <--- Changed to true for testing purposes
 // 订阅页面隐藏时显示的嘲讽语
 let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿";
 
