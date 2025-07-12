@@ -87,11 +87,12 @@ export default {
                 嘲讽语 = env.嘲讽语;
             }
 
-            // --- 修复点：确保从 env.NAT64 读取值 ---
+            // --- 修复点：确保从 env.NAT64 读取值，并正确处理 undefined 和 "false" ---
             if (env.NAT64 !== undefined) {
-                enableNAT64 = env.NAT64 === 'true';
+                // 如果 env.NAT64 存在，将其转换为布尔值
+                enableNAT64 = env.NAT64 === 'true'; // 只有当字符串严格等于 "true" 时才为 true，否则为 false
             } else {
-                // 如果 env.NAT64 未定义，则保持 enableNAT64 的默认值 true
+                // 如果 env.NAT64 未定义，则保持 enableNAT64 的默认值 (true)
                 enableNAT64 = true; 
             }
 
