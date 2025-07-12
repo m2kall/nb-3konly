@@ -10,10 +10,9 @@ let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
 let proxyIP = 'proxyip.zone.id';
 
-// 控制订阅页面是否隐藏，设置为 true 则隐藏，默认是 false (不隐藏)
-let 隐藏 = false;
-// 订阅页面隐藏时显示的嘲讽语
-let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿";
+// Moved these to be accessed via env in the fetch function for external injection
+// let 隐藏 = false;
+// let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿";
 
 
 if (!isValidUUID(userID)) {
@@ -23,7 +22,7 @@ if (!isValidUUID(userID)) {
 export default {
 	/**
 	 * @param {import("@cloudflare/workers-types").Request} request
-	 * @param {{UUID: string, PROXYIP: string}} env
+	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION: string, SARCASM_MESSAGE: string}} env // Added HIDE_SUBSCRIPTION and SARCASM_MESSAGE
 	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
 	 * @returns {Promise<Response>}
 	 */
@@ -31,6 +30,14 @@ export default {
 		try {
 			userID = env.UUID || userID;
 			proxyIP = env.PROXYIP || proxyIP;
+
+			// --- Key Changes Here ---
+			// Retrieve HIDE_SUBSCRIPTION from env, default to 'false' if not set
+			const 隐藏 = env.HIDE_SUBSCRIPTION === 'true';
+			// Retrieve SARCASM_MESSAGE from env, default to the original message
+			const 嘲讽语 = env.SARCASM_MESSAGE || "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿";
+			// --- End Key Changes ---
+
 			const upgradeHeader = request.headers.get('Upgrade');
 			if (!upgradeHeader || upgradeHeader !== 'websocket') {
 				const url = new URL(request.url);
