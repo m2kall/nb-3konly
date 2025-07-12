@@ -8,7 +8,7 @@ import { connect } from 'cloudflare:sockets';
 // [Windows] Press "Win + R", input cmd and run:  Powershell -NoExit -Command "[guid]::NewGuid()"
 let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
-let proxyIP = 'proxyip.zone.id'; // 确保这里有默认值或者通过环境变量设置
+let proxyIP = ''; // 确保这里有默认值或者通过环境变量设置
 
 // --- 新增：NAT64 开关变量 ---
 let NAT64 = true; // 默认开启 NAT64
