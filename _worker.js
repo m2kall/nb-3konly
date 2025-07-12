@@ -10,38 +10,19 @@ let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
 let proxyIP = 'proxyip.zone.id';
 
-// NAT64 默认开启
-let NAT64_ENABLED = true;
+// 这些变量现在将通过 env 对象在 fetch 函数中获取
+// let 隐藏 = false;
+// let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿";
+
 
 if (!isValidUUID(userID)) {
 	throw new Error('uuid is not valid');
 }
 
-/* ---------- NAT64 工具 ---------- */
-function convertToNAT64IPv6(ipv4) {
-  const parts = ipv4.split('.');
-  if (parts.length !== 4) throw new Error('无效的IPv4地址');
-  const hex = parts.map(p => Number(p).toString(16).padStart(2, '0'));
-  // This is a common NAT64 prefix used by some providers (e.g., Google's public NAT64)
-  // You might need to adjust this based on your Cloudflare environment's actual NAT64 prefix
-  return `[64:ff9b::${hex[0]}${hex[1]}:${hex[2]}${hex[3]}]`;
-}
-
-async function getIPv6ProxyAddress(domain) {
-  const r = await fetch(`https://1.1.1.1/dns-query?name=${domain}&type=A`, {
-    headers: { 'Accept': 'application/dns-json' }
-  });
-  const j = await r.json();
-  const a = j.Answer?.find(x => x.type === 1); // Type 1 is A record (IPv4)
-  if (!a) throw new Error('无法解析域名的IPv4地址');
-  return convertToNAT64IPv6(a.data);
-}
-
-
 export default {
 	/**
 	 * @param {import("@cloudflare/workers-types").Request} request
-	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION?: string, SARCASM_MESSAGE?: string, 隐藏?: string, 嘲讽语?: string, NAT64?: string}} env // 增加了 NAT64 变量的类型提示
+	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION?: string, SARCASM_MESSAGE?: string, 隐藏?: string, 嘲讽语?: string}} env // 增加了中文环境变量的类型提示
 	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
 	 * @returns {Promise<Response>}
 	 */
@@ -66,10 +47,6 @@ export default {
             } else if (env.嘲讽语 !== undefined) { // 尝试读取中文变量名
                 嘲讽语 = env.嘲讽语;
             }
-
-            if (env.NAT64 !== undefined) { // 读取 NAT64 环境变量
-                NAT64_ENABLED = env.NAT64 === 'true';
-            }
             // --- **新增逻辑结束** ---
 
             // --- **调试日志：请留意这里** ---
@@ -79,8 +56,6 @@ export default {
             console.log(`环境变量 SARCASM_MESSAGE 原始值 (英文): ${env.SARCASM_MESSAGE}`);
             console.log(`环境变量 嘲讽语 原始值 (中文): ${env.嘲讽语}`);
             console.log(`最终解析的嘲讽语: ${嘲讽语}`);
-            console.log(`环境变量 NAT64 原始值: ${env.NAT64}`);
-            console.log(`最终解析的 NAT64_ENABLED: ${NAT64_ENABLED}`);
             // --- **调试日志结束** ---
 
 
@@ -108,7 +83,7 @@ export default {
 								headers: {
 									"Content-Type": "text/plain;charset=utf-8",
 								}
-							);
+							});
 						}
 					}
 					default:
@@ -184,7 +159,7 @@ async function dynamicProtocolOverWSHandler(request) {
 				} `;
 			if (hasError) {
 				// 出错？直接中断，不给机会
-				throw new Error(message);
+				throw new Error(message); 
 				return;
 			}
 			// 如果是 UDP 但不是 DNS 端口，就拒绝
@@ -192,7 +167,7 @@ async function dynamicProtocolOverWSHandler(request) {
 				if (portRemote === 53) {
 					isDns = true;
 				} else {
-					throw new Error('UDP proxy only enable for DNS which is port 53');
+					throw new Error('UDP proxy only enable for DNS which is port 53'); 
 					return;
 				}
 			}
@@ -204,7 +179,7 @@ async function dynamicProtocolOverWSHandler(request) {
 				return handleDNSQuery(rawClientData, webSocket, dynamicProtocolResponseHeader, log);
 			}
 			// 处理 TCP 出站连接，真正的“连接世界”
-			await handleTCPOutBound(remoteSocketWapper, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log);
+			handleTCPOutBound(remoteSocketWapper, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log);
 		},
 		close() {
 			log(`readableWebSocketStream is close`);
@@ -252,58 +227,23 @@ async function handleTCPOutBound(remoteSocket, addressType, addressRemote, portR
 		return tcpSocket;
 	}
 
-	let tcpSocket;
+	// 如果 CF 的 TCP 连接没有收到数据，就尝试“重定向”IP
+	async function retry() {
+		tcpSocket = await connectAndWrite(proxyIP || addressRemote, portRemote);
+		// 不管重试成功与否，都要关闭 WebSocket
+		tcpSocket.closed.catch(error => {
+			console.log('retry tcpSocket closed error', error);
+		}).finally(() => {
+			safeCloseWebSocket(webSocket);
+		})
+		remoteSocketToWS(tcpSocket, webSocket, dynamicProtocolResponseHeader, null, log);
+	}
 
-	/* --------- 1. 直连 --------- */
-	try {
-        tcpSocket = await connectAndWrite(addressRemote, portRemote);
-        await tcpSocket.opened; // Ensure connection is established before proceeding
-    } catch (e) {
-        log(`Direct connection to ${addressRemote}:${portRemote} failed: ${e.message}`);
-        /* --------- 2. NAT64 --------- */
-        if (NAT64_ENABLED) {
-            try {
-                let natTarget;
-                if (/^\d+\.\d+\.\d+\.\d+$/.test(addressRemote)) { // Check if it's an IPv4 address
-                    natTarget = convertToNAT64IPv6(addressRemote);
-                    log(`Attempting NAT64 connection for IPv4: ${addressRemote} -> ${natTarget}`);
-                } else if (addressRemote.includes(':')) { // Check if it's an IPv6 address
-                    throw new Error('IPv6 地址无需 NAT64'); // IPv6 addresses don't need NAT64
-                } else { // Assume it's a domain name
-                    natTarget = await getIPv6ProxyAddress(addressRemote);
-                    log(`Attempting NAT64 connection for domain: ${addressRemote} -> ${natTarget}`);
-                }
-                const cleanedNatTarget = natTarget.replace(/[\"'`]+/g, ''); // Clean any quotes from the NAT64 IPv6 string
-                tcpSocket = await connectAndWrite(cleanedNatTarget, portRemote);
-                await tcpSocket.opened;
-            } catch (nat64Error) {
-                log(`NAT64 connection to ${addressRemote}:${portRemote} failed: ${nat64Error.message}`);
-                /* --------- 3. 反代兜底 --------- */
-                if (!proxyIP) {
-                    throw new Error('所有连接尝试失败，且未配置 PROXYIP 进行兜底');
-                }
-                const [h, p] = proxyIP.split(':');
-                log(`Falling back to proxy IP: ${h}:${Number(p) || portRemote}`);
-                tcpSocket = await connectAndWrite(h, Number(p) || portRemote);
-                await tcpSocket.opened;
-            }
-        } else {
-            /* --------- 3. 反代兜底 (如果 NAT64 未启用) --------- */
-            if (!proxyIP) {
-                throw new Error('所有连接尝试失败，且 NAT64 未启用，也未配置 PROXYIP 进行兜底');
-            }
-            const [h, p] = proxyIP.split(':');
-            log(`NAT64 is disabled. Falling back to proxy IP: ${h}:${Number(p) || portRemote}`);
-            tcpSocket = await connectAndWrite(h, Number(p) || portRemote);
-            await tcpSocket.opened;
-        }
-    }
-
+	let tcpSocket = await connectAndWrite(addressRemote, portRemote);
 
 	// 当远程 Socket 准备好后，将其“传递”给 WebSocket
 	// remote--> ws (数据流向：从远程目标到 WebSocket)
-	// retry 函数现在只用于 TCP 连接没有收到数据的情况，而不是连接建立失败
-	remoteSocketToWS(tcpSocket, webSocket, dynamicProtocolResponseHeader, null, log); // Removed retry as it's handled within handleTCPOutBound
+	remoteSocketToWS(tcpSocket, webSocket, dynamicProtocolResponseHeader, retry, log);
 }
 
 /**
@@ -372,9 +312,9 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
 // https://github.com/zizifn/excalidraw-backup/blob/main/v2ray-protocol.excalidraw
 
 /**
- * * @param { ArrayBuffer} dynamicProtocolBuffer
- * @param {string} userID
- * @returns
+ * * @param { ArrayBuffer} dynamicProtocolBuffer 
+ * @param {string} userID 
+ * @returns 
  */
 function processDynamicProtocolHeader(
 	dynamicProtocolBuffer,
@@ -492,11 +432,11 @@ function processDynamicProtocolHeader(
 
 
 /**
- * * @param {import("@cloudflare/workers-types").Socket} remoteSocket
- * @param {import("@cloudflare/workers-types").WebSocket} webSocket
- * @param {ArrayBuffer} dynamicProtocolResponseHeader
+ * * @param {import("@cloudflare/workers-types").Socket} remoteSocket 
+ * @param {import("@cloudflare/workers-types").WebSocket} webSocket 
+ * @param {ArrayBuffer} dynamicProtocolResponseHeader 
  * @param {(() => Promise<void>) | null} retry
- * @param {*} log
+ * @param {*} log 
  */
 async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponseHeader, retry, log) {
 	// remote--> ws (数据流向：从远程目标到 WebSocket)
@@ -511,8 +451,8 @@ async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponse
 				start() {
 				},
 				/**
-				 * * @param {Uint8Array} chunk
-				 * @param {*} controller
+				 * * @param {Uint8Array} chunk 
+				 * @param {*} controller 
 				 */
 				async write(chunk, controller) {
 					hasIncomingData = true;
@@ -554,8 +494,8 @@ async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponse
 }
 
 /**
- * * @param {string} base64Str
- * @returns
+ * * @param {string} base64Str 
+ * @returns 
  */
 function base64ToArrayBuffer(base64Str) {
 	if (!base64Str) {
@@ -574,7 +514,7 @@ function base64ToArrayBuffer(base64Str) {
 
 /**
  * This is not real UUID validation
- * @param {string} uuid
+ * @param {string} uuid 
  */
 function isValidUUID(uuid) {
 	// UUID 格式校验，确保是“合法身份”
@@ -615,15 +555,15 @@ function stringify(arr, offset = 0) {
 }
 
 /**
- * * @param {ArrayBuffer} udpChunk
- * @param {import("@cloudflare/workers-types").WebSocket} webSocket
- * @param {ArrayBuffer} dynamicProtocolResponseHeader
- * @param {(string)=> void} log
+ * * @param {ArrayBuffer} udpChunk 
+ * @param {import("@cloudflare/workers-types").WebSocket} webSocket 
+ * @param {ArrayBuffer} dynamicProtocolResponseHeader 
+ * @param {(string)=> void} log 
  */
 async function handleDNSQuery(udpChunk, webSocket, dynamicProtocolResponseHeader, log) {
 	// DNS 查询处理，始终使用硬编码的 DNS 服务器
 	try {
-		const dnsServer = '8.8.4.4';
+		const dnsServer = '8.8.4.4'; 
 		const dnsPort = 53;
 		/** @type {ArrayBuffer | null} */
 		let dynamicProtocolHeader = dynamicProtocolResponseHeader;
@@ -663,17 +603,17 @@ async function handleDNSQuery(udpChunk, webSocket, dynamicProtocolResponseHeader
 }
 
 /**
- * * @param {string} userID
+ * * @param {string} userID 
  * @param {string | null} hostName
  * @returns {string}
  */
 function getDynamicProtocolConfig(userID, hostName) {
 	// 生成 V2Ray 和 Clash-Meta 配置，这是“订阅信息”的载体
-	const protocol = 转码 + 转码2;
-	const dynamicProtocolMain =
+	const protocol = 转码 + 转码2; 
+	const dynamicProtocolMain = 
 	`${protocol}${符号}${userID}@${hostName}:443`+
 	`?encryption=none&security=tls&sni=${hostName}&fp=randomized&type=ws&host=${hostName}&path=%2F%3Fed%3D2048#${hostName}`;
-
+	
 	return `
 ################################################################
 v2ray
@@ -700,4 +640,4 @@ clash-meta
 ---------------------------------------------------------------
 ################################################################
 `;
-}
+						      }
