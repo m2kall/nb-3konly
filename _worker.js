@@ -62,7 +62,7 @@ if (!isValidUUID(userID)) {
 export default {
 	/**
 	 * @param {import("@cloudflare/workers-types").Request} request
-	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION?: string, SARCASM_MESSAGE?: string, 隐藏?: string, 嘲讽语?: string, NAT64?: string}} env // 变量名已更新为 NAT64
+	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION?: string, SARCASM_MESSAGE?: string, 隐藏?: string, 嘲讽语?: string, ENABLE_NAT64?: string}} env // 增加了中文环境变量的类型提示和 ENABLE_NAT64
 	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
 	 * @returns {Promise<Response>}
 	 */
@@ -73,7 +73,7 @@ export default {
 
             let 隐藏 = false; // 默认值
             let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿"; // 默认值
-            let enableNAT64 = true; // NAT64开关，默认打开
+            let enableNAT64 = true; // 新增：NAT64开关，默认打开
 
             if (env.HIDE_SUBSCRIPTION !== undefined) {
                 隐藏 = env.HIDE_SUBSCRIPTION === 'true';
@@ -87,9 +87,8 @@ export default {
                 嘲讽语 = env.嘲讽语;
             }
 
-            // --- 变量名已更新为 NAT64 ---
-            if (env.NAT64 !== undefined) {
-                enableNAT64 = env.NAT64 === 'true';
+            if (env.ENABLE_NAT64 !== undefined) {
+                enableNAT64 = env.ENABLE_NAT64 === 'true';
             }
 
             // --- **调试日志：请留意这里** ---
@@ -99,8 +98,8 @@ export default {
             console.log(`环境变量 SARCASM_MESSAGE 原始值 (英文): ${env.SARCASM_MESSAGE}`);
             console.log(`环境变量 嘲讽语 原始值 (中文): ${env.嘲讽语}`);
             console.log(`最终解析的嘲讽语: ${嘲讽语}`);
-            console.log(`环境变量 NAT64 原始值: ${env.NAT64}`); // 日志中也已更新
-            console.log(`最终解析的布尔值 enableNAT64: ${enableNAT64}`);
+            console.log(`环境变量 ENABLE_NAT64 原始值: ${env.ENABLE_NAT64}`);
+            console.log(`最终解析的布尔值 ENABLE_NAT64: ${enableNAT64}`);
             // --- **调试日志结束** ---
 
 
