@@ -1,4 +1,4 @@
-// nat64Utils.js (Integrated)
+// NAT64Utils (Integrated)
 const DNS_QUERY_URL = 'https://1.1.1.1/dns-query';
 
 /**
