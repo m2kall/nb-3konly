@@ -10,6 +10,10 @@ let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
 let proxyIP = 'proxyip.zone.id'; // 确保这里有默认值或者通过环境变量设置
 
+// --- 新增：NAT64 开关变量 ---
+let NAT64 = true; // 默认开启 NAT64
+// --- 结束新增 ---
+
 if (!isValidUUID(userID)) {
 	throw new Error('uuid is not valid');
 }
@@ -17,7 +21,7 @@ if (!isValidUUID(userID)) {
 export default {
 	/**
 	 * @param {import("@cloudflare/workers-types").Request} request
-	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION?: string, SARCASM_MESSAGE?: string, 隐藏?: string, 嘲讽语?: string}} env // 增加了中文环境变量的类型提示
+	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION?: string, SARCASM_MESSAGE?: string, 隐藏?: string, 嘲讽语?: string, NAT64?: string}} env // 增加了 NAT64 变量的类型提示
 	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
 	 * @returns {Promise<Response>}
 	 */
@@ -42,7 +46,12 @@ export default {
             } else if (env.嘲讽语 !== undefined) { // 尝试读取中文变量名
                 嘲讽语 = env.嘲讽语;
             }
-            // --- **新增逻辑结束** ---
+
+            // --- 新增：读取 NAT64 环境变量 ---
+            if (env.NAT64 !== undefined) {
+                NAT64 = env.NAT64 === 'true'; // 将字符串 'true' 或 'false' 转换为布尔值
+            }
+            // --- 结束新增 ---
 
             // --- **调试日志：请留意这里** ---
             console.log(`环境变量 HIDE_SUBSCRIPTION 原始值 (英文): ${env.HIDE_SUBSCRIPTION}`);
@@ -51,6 +60,8 @@ export default {
             console.log(`环境变量 SARCASM_MESSAGE 原始值 (英文): ${env.SARCASM_MESSAGE}`);
             console.log(`环境变量 嘲讽语 原始值 (中文): ${env.嘲讽语}`);
             console.log(`最终解析的嘲讽语: ${嘲讽语}`);
+            console.log(`环境变量 NAT64 原始值: ${env.NAT64}`); // 新增调试日志
+            console.log(`最终解析的布尔值 NAT64: ${NAT64}`); // 新增调试日志
             // --- **调试日志结束** ---
 
 
@@ -187,7 +198,8 @@ async function dynamicProtocolOverWSHandler(request, fallbackProxyIP) {
 				webSocket,
 				dynamicProtocolResponseHeader,
 				log,
-				fallbackProxyIP // 传递 proxyIP
+				fallbackProxyIP, // 传递 proxyIP
+                NAT64 // 传递 NAT64 变量
 			);
 		},
 		close() {
@@ -218,9 +230,10 @@ async function dynamicProtocolOverWSHandler(request, fallbackProxyIP) {
  * @param {Uint8Array} dynamicProtocolResponseHeader The dynamicProtocol response header.
  * @param {function} log The logging function.
  * @param {string} fallbackProxyIP The proxy IP to fall back to if NAT64 fails.
+ * @param {boolean} enableNAT64 Whether NAT64 is enabled. // 新增参数
  * @returns {Promise<void>}
  */
-async function handleTCPOutBound(remoteSocketWapper, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log, fallbackProxyIP) {
+async function handleTCPOutBound(remoteSocketWapper, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log, fallbackProxyIP, enableNAT64) {
 	let tcpSocket;
 	
 	// --- 尝试 1: 直连 ---
@@ -236,34 +249,58 @@ async function handleTCPOutBound(remoteSocketWapper, addressRemote, portRemote, 
 	} catch (directError) {
 		console.error(`[Error 1/3] Direct connection failed for ${addressRemote}:${portRemote}:`, directError.stack || directError.message || directError);
 		
-		// --- 尝试 2: 回退到 NAT64 ---
-		try {
-			log(`[Attempt 2/3] Direct failed, attempting NAT64 connection to ${addressRemote}:${portRemote}`);
-            // connectViaNAT64 应该处理 IPv4/域名到 NAT64 IPv6 的转换和连接
-			const { tcpSocket: nat64Socket } = await connectViaNAT64(addressRemote, portRemote);
-			tcpSocket = nat64Socket;
-			log(`[Success 2/3] Successfully connected via NAT64 to ${addressRemote}:${portRemote}`);
+		// --- 尝试 2: 回退到 NAT64 (如果开启) ---
+		if (enableNAT64) { // 检查 NAT64 是否开启
+			try {
+				log(`[Attempt 2/3] Direct failed, attempting NAT64 connection to ${addressRemote}:${portRemote}`);
+				// connectViaNAT64 应该处理 IPv4/域名到 NAT64 IPv6 的转换和连接
+				const { tcpSocket: nat64Socket } = await connectViaNAT64(addressRemote, portRemote);
+				tcpSocket = nat64Socket;
+				log(`[Success 2/3] Successfully connected via NAT64 to ${addressRemote}:${portRemote}`);
 
-		} catch (nat64Error) {
-			console.error(`[Error 2/3] NAT64 connection failed for ${addressRemote}:${portRemote}:`, nat64Error.stack || nat64Error.message || nat64Error);
-			
+			} catch (nat64Error) {
+				console.error(`[Error 2/3] NAT64 connection failed for ${addressRemote}:${portRemote}:`, nat64Error.stack || nat64Error.message || nat64Error);
+				
+				// --- 尝试 3: 回退到 ProxyIP ---
+				if (fallbackProxyIP) {
+					log(`[Attempt 3/3] NAT64 failed, attempting to fall back to proxyIP: ${fallbackProxyIP}:${portRemote}`);
+					try {
+						tcpSocket = connect({
+							hostname: fallbackProxyIP,
+							port: portRemote,
+						});
+						await tcpSocket.opened;
+						log(`[Success 3/3] Successfully connected via proxyIP to ${fallbackProxyIP}:${portRemote}`);
+					} catch (proxyIPError) {
+						console.error(`[Error 3/3] Fallback to proxyIP failed for ${fallbackProxyIP}:${portRemote}:`, proxyIPError.stack || proxyIPError.message || proxyIPError);
+						safeCloseWebSocket(webSocket); // 所有尝试都失败，关闭 WebSocket
+						return; // 退出函数，不进行后续操作
+					}
+				} else {
+					console.error(`[Error] NAT64 failed and no fallback proxyIP provided. Closing WebSocket.`);
+					safeCloseWebSocket(webSocket); // 没有回退选项，直接关闭 WebSocket
+					return; // 退出函数
+				}
+			}
+		} else { // 如果 NAT64 未开启，则直接跳过 NAT64 尝试，进入 ProxyIP 尝试
+			log(`[Skipping NAT64] NAT64 is disabled, skipping attempt.`);
 			// --- 尝试 3: 回退到 ProxyIP ---
 			if (fallbackProxyIP) {
-				log(`[Attempt 3/3] NAT64 failed, attempting to fall back to proxyIP: ${fallbackProxyIP}:${portRemote}`);
+				log(`[Attempt 2/2] Direct failed and NAT64 disabled, attempting to fall back to proxyIP: ${fallbackProxyIP}:${portRemote}`);
 				try {
 					tcpSocket = connect({
 						hostname: fallbackProxyIP,
 						port: portRemote,
 					});
 					await tcpSocket.opened;
-					log(`[Success 3/3] Successfully connected via proxyIP to ${fallbackProxyIP}:${portRemote}`);
+					log(`[Success 2/2] Successfully connected via proxyIP to ${fallbackProxyIP}:${portRemote}`);
 				} catch (proxyIPError) {
-					console.error(`[Error 3/3] Fallback to proxyIP failed for ${fallbackProxyIP}:${portRemote}:`, proxyIPError.stack || proxyIPError.message || proxyIPError);
+					console.error(`[Error 2/2] Fallback to proxyIP failed for ${fallbackProxyIP}:${portRemote}:`, proxyIPError.stack || proxyIPError.message || proxyIPError);
 					safeCloseWebSocket(webSocket); // 所有尝试都失败，关闭 WebSocket
 					return; // 退出函数，不进行后续操作
 				}
 			} else {
-				console.error(`[Error] NAT64 failed and no fallback proxyIP provided. Closing WebSocket.`);
+				console.error(`[Error] Direct connection failed, NAT64 is disabled, and no fallback proxyIP provided. Closing WebSocket.`);
 				safeCloseWebSocket(webSocket); // 没有回退选项，直接关闭 WebSocket
 				return; // 退出函数
 			}
@@ -750,4 +787,4 @@ async function connectViaNAT64(address, port) {
     });
     await tcpSocket.opened;
     return { tcpSocket }; 
-				       }
+			}
