@@ -8,10 +8,13 @@ import { connect } from 'cloudflare:sockets';
 // [Windows] Press "Win + R", input cmd and run:  Powershell -NoExit -Command "[guid]::NewGuid()"
 let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
-let proxyIP = '';
+let proxyIP = 'proxyip.zone.id';
 
-// NAT64 默认开启
-let NAT64 = true; 
+// 控制订阅页面是否隐藏，设置为 true 则隐藏，默认是 false (不隐藏)
+let 隐藏 = false;
+// 订阅页面隐藏时显示的嘲讽语
+let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿";
+
 
 if (!isValidUUID(userID)) {
 	throw new Error('uuid is not valid');
@@ -20,7 +23,7 @@ if (!isValidUUID(userID)) {
 export default {
 	/**
 	 * @param {import("@cloudflare/workers-types").Request} request
-	 * @param {{UUID: string, PROXYIP: string, NAT64: string}} env
+	 * @param {{UUID: string, PROXYIP: string}} env
 	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
 	 * @returns {Promise<Response>}
 	 */
@@ -28,9 +31,6 @@ export default {
 		try {
 			userID = env.UUID || userID;
 			proxyIP = env.PROXYIP || proxyIP;
-            // NAT64 默认开启，不再从环境变量读取（如需可配置，请取消注释下一行，并确保 env.NAT64 是 'true' 或 'false' 字符串）
-            // NAT64 = (env.NAT64 === 'true'); 
-
 			const upgradeHeader = request.headers.get('Upgrade');
 			if (!upgradeHeader || upgradeHeader !== 'websocket') {
 				const url = new URL(request.url);
@@ -38,22 +38,36 @@ export default {
 					case '/':
 						return new Response(JSON.stringify(request.cf), { status: 200 });
 					case `/${userID}`: {
-						const dynamicProtocolConfig = getDynamicProtocolConfig(userID, request.headers.get('Host'));
-						return new Response(`${dynamicProtocolConfig}`, {
-							status: 200,
-							headers: {
-								"Content-Type": "text/plain;charset=utf-8",
-							}
-						});
+						// 根据 隐藏 变量决定是否显示订阅配置
+						if (隐藏) {
+							// 隐藏模式启动，给个“惊喜”
+							return new Response(嘲讽语, {
+								status: 200,
+								headers: {
+									"Content-Type": "text/plain;charset=utf-8",
+								}
+							});
+						} else {
+							// 正常展示，无需遮掩
+							const dynamicProtocolConfig = getDynamicProtocolConfig(userID, request.headers.get('Host'));
+							return new Response(`${dynamicProtocolConfig}`, {
+								status: 200,
+								headers: {
+									"Content-Type": "text/plain;charset=utf-8",
+								}
+							});
+						}
 					}
 					default:
 						return new Response('Not found', { status: 404 });
 				}
 			} else {
+				// 是 WebSocket 请求？那就去处理“秘密隧道”吧
 				return await dynamicProtocolOverWSHandler(request);
 			}
 		} catch (err) {
 			/** @type {Error} */ let e = err;
+			// 哎呀，出错了，直接把错误信息吐出来
 			return new Response(e.toString());
 		}
 	},
@@ -89,19 +103,22 @@ async function dynamicProtocolOverWSHandler(request) {
 	};
 	let isDns = false;
 
-	// ws --> remote
+	// ws --> remote (数据流向：从 WebSocket 到远程目标)
 	readableWebSocketStream.pipeTo(new WritableStream({
 		async write(chunk, controller) {
 			if (isDns) {
+				// 如果是 DNS 查询，特殊处理
 				return await handleDNSQuery(chunk, webSocket, null, log);
 			}
 			if (remoteSocketWapper.value) {
+				// 远程连接已建立，直接写入数据
 				const writer = remoteSocketWapper.value.writable.getWriter()
 				await writer.write(chunk);
 				writer.releaseLock();
 				return;
 			}
 
+			// 解析协议头部，这是“解密”的关键一步
 			const {
 				hasError,
 				message,
@@ -116,28 +133,27 @@ async function dynamicProtocolOverWSHandler(request) {
 			portWithRandomLog = `${portRemote}--${Math.random()} ${isUDP ? 'udp ' : 'tcp '
 				} `;
 			if (hasError) {
-				// controller.error(message);
-				throw new Error(message); // cf seems has bug, controller.error will not end stream
-				// webSocket.close(1000, message);
+				// 出错？直接中断，不给机会
+				throw new Error(message); 
 				return;
 			}
-			// if UDP but port not DNS port, close it
+			// 如果是 UDP 但不是 DNS 端口，就拒绝
 			if (isUDP) {
 				if (portRemote === 53) {
 					isDns = true;
 				} else {
-					// controller.error('UDP proxy only enable for DNS which is port 53');
-					throw new Error('UDP proxy only enable for DNS which is port 53'); // cf seems has bug, controller.error will not end stream
+					throw new Error('UDP proxy only enable for DNS which is port 53'); 
 					return;
 				}
 			}
-			// ["version", "附加信息长度 N"]
+			// 响应头部，版本信息
 			const dynamicProtocolResponseHeader = new Uint8Array([dynamicProtocolVersion[0], 0]);
 			const rawClientData = chunk.slice(rawDataIndex);
 
 			if (isDns) {
 				return handleDNSQuery(rawClientData, webSocket, dynamicProtocolResponseHeader, log);
 			}
+			// 处理 TCP 出站连接，真正的“连接世界”
 			handleTCPOutBound(remoteSocketWapper, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log);
 		},
 		close() {
@@ -158,104 +174,51 @@ async function dynamicProtocolOverWSHandler(request) {
 }
 
 /**
- * Handles outbound TCP connections with a priority of Direct -> NAT64 -> ProxyIP.
+ * Handles outbound TCP connections.
  *
- * @param {any} remoteSocketWapper Object to hold the established remote socket.
- * @param {number} addressType The remote address type to connect to. (unused in this refined logic but kept for context)
+ * @param {any} remoteSocket
+ * @param {number} addressType The remote address type to connect to.
  * @param {string} addressRemote The remote address to connect to.
  * @param {number} portRemote The remote port to connect to.
- * @param {Uint8Array} rawClientData The raw client data to write to the socket.
- * @param {import("@cloudflare/workers-types").WebSocket} webSocket The WebSocket to communicate with the client.
- * @param {Uint8Array} dynamicProtocolResponseHeader The VL response header.
+ * @param {Uint8Array} rawClientData The raw client data to write.
+ * @param {import("@cloudflare/workers-types").WebSocket} webSocket The WebSocket to pass the remote socket to.
+ * @param {Uint8Array} dynamicProtocolResponseHeader The dynamicProtocol response header.
  * @param {function} log The logging function.
- * @returns {Promise<void>}
+ * @returns {Promise<void>} The remote socket.
  */
-async function handleTCPOutBound(remoteSocketWapper, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log) {
-    let tcpSocket = null;
-    let connected = false;
+async function handleTCPOutBound(remoteSocket, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log,) {
+	async function connectAndWrite(address, port) {
+		/** @type {import("@cloudflare/workers-types").Socket} */
+		// 建立与远程目标的 TCP 连接，这是数据的“出口”
+		const tcpSocket = connect({
+			hostname: address,
+			port: port,
+		});
+		remoteSocket.value = tcpSocket;
+		log(`connected to ${address}:${port}`);
+		const writer = tcpSocket.writable.getWriter();
+		await writer.write(rawClientData); // 首次写入，通常是 TLS 握手
+		writer.releaseLock();
+		return tcpSocket;
+	}
 
-    /**
-     * Attempts to connect to a given address and port, and writes initial data.
-     * @param {string} address The target address.
-     * @param {number} port The target port.
-     * @returns {Promise<import("@cloudflare/workers-types").Socket>} The connected TCP socket.
-     */
-    async function attemptConnect(address, port) {
-        const socket = connect({ hostname: address, port: port });
-        remoteSocketWapper.value = socket; // Update the wrapper with the potential socket
-        await socket.opened; // Wait for the connection to be established
-        const writer = socket.writable.getWriter();
-        await writer.write(rawClientData); // Write the initial client data
-        writer.releaseLock();
-        return socket;
-    }
+	// 如果 CF 的 TCP 连接没有收到数据，就尝试“重定向”IP
+	async function retry() {
+		tcpSocket = await connectAndWrite(proxyIP || addressRemote, portRemote);
+		// 不管重试成功与否，都要关闭 WebSocket
+		tcpSocket.closed.catch(error => {
+			console.log('retry tcpSocket closed error', error);
+		}).finally(() => {
+			safeCloseWebSocket(webSocket);
+		})
+		remoteSocketToWS(tcpSocket, webSocket, dynamicProtocolResponseHeader, null, log);
+	}
 
-    // --- 1. 尝试直连 ---
-    try {
-        log(`Attempting direct connection to ${addressRemote}:${portRemote}...`);
-        tcpSocket = await attemptConnect(addressRemote, portRemote);
-        connected = true;
-        log(`Direct connect to ${addressRemote}:${portRemote} successful.`);
-    } catch (e) {
-        log(`Direct connect to ${addressRemote}:${portRemote} failed: ${e.message}`);
-    }
+	let tcpSocket = await connectAndWrite(addressRemote, portRemote);
 
-    // --- 2. 直连不通时，尝试 NAT64 ---
-    if (!connected && NAT64) {
-        try {
-            let natTarget = null;
-            if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(addressRemote)) { // 是 IPv4 地址
-                natTarget = convertToNAT64IPv6(addressRemote);
-                log(`Converted IPv4 ${addressRemote} to NAT64 IPv6 ${natTarget}.`);
-            } else if (addressRemote.includes(':')) { // 已经是 IPv6 地址，NAT64 无需处理
-                log(`Target ${addressRemote} is already IPv6. Skipping NAT64.`);
-                // 这里不抛出错误，因为可能直连 IPv6 失败，仍希望尝试 ProxyIP
-            } else { // 是域名，尝试解析为 IPv4 并进行 NAT64 转换
-                log(`Resolving domain ${addressRemote} for NAT64...`);
-                natTarget = await getIPv6ProxyAddress(addressRemote);
-                log(`Resolved ${addressRemote} to NAT64 IPv6 ${natTarget}.`);
-            }
-
-            if (natTarget) { // 如果成功获得了 NAT64 目标地址
-                const cleanedNatTarget = natTarget.replace(/[\"'`]+/g, ''); // 清理可能引入的引号
-                log(`Attempting NAT64 connection to ${cleanedNatTarget}:${portRemote} (original: ${addressRemote})...`);
-                tcpSocket = await attemptConnect(cleanedNatTarget, portRemote);
-                connected = true;
-                log(`NAT64 connect to ${cleanedNatTarget}:${portRemote} successful.`);
-            }
-        } catch (e) {
-            log(`NAT64 connect to ${addressRemote}:${portRemote} failed: ${e.message}`);
-        }
-    }
-
-    // --- 3. NAT64 不通时，尝试 proxyIP 兜底 ---
-    if (!connected && proxyIP) {
-        try {
-            log(`Attempting fallback proxyIP connection to ${proxyIP}:${portRemote} (original: ${addressRemote})...`);
-            tcpSocket = await attemptConnect(proxyIP, portRemote);
-            connected = true;
-            log(`ProxyIP connect to ${proxyIP}:${portRemote} successful.`);
-        } catch (e) {
-            log(`ProxyIP connect to ${proxyIP}:${portRemote} failed: ${e.message}`);
-        }
-    }
-
-    // --- 检查是否成功连接 ---
-    if (!connected || !tcpSocket) {
-        throw new Error(`Failed to establish any outbound connection to ${addressRemote}:${portRemote}.`);
-    }
-
-    // --- 建立隧道连接 (如果成功) ---
-    // no matter retry success or not, close websocket
-    tcpSocket.closed.catch(error => {
-        console.log('tcpSocket closed error', error);
-    }).finally(() => {
-        safeCloseWebSocket(webSocket);
-    });
-    
-    // when remoteSocket is ready, pass to websocket
-    // remote--> ws
-    remoteSocketToWS(tcpSocket, webSocket, dynamicProtocolResponseHeader, null, log);
+	// 当远程 Socket 准备好后，将其“传递”给 WebSocket
+	// remote--> ws (数据流向：从远程目标到 WebSocket)
+	remoteSocketToWS(tcpSocket, webSocket, dynamicProtocolResponseHeader, retry, log);
 }
 
 /**
@@ -279,8 +242,7 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
 			// However, the server -> client stream is still open until you call close() on the server side.
 			// The WebSocket protocol says that a separate close message must be sent in each direction to fully close the socket.
 			webSocketServer.addEventListener('close', () => {
-				// client send close, need close server
-				// if stream is cancel, skip controller.close
+				// 客户端发来关闭请求，需要服务器也关闭
 				safeCloseWebSocket(webSocketServer);
 				if (readableStreamCancel) {
 					return;
@@ -293,7 +255,7 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
 				controller.error(err);
 			}
 			);
-			// for ws 0rtt
+			// 处理 WebSocket 0-RTT 的早期数据
 			const { earlyData, error } = base64ToArrayBuffer(earlyDataHeader);
 			if (error) {
 				controller.error(error);
@@ -303,13 +265,11 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
 		},
 
 		pull(controller) {
-			// if ws can stop read if stream is full, we can implement backpressure
+			// 如果 WebSocket 可以停止读取（当流满时），我们可以实现背压
 			// https://streams.spec.whatwg.org/#example-rs-push-backpressure
 		},
 		cancel(reason) {
-			// 1. pipe WritableStream has error, this cancel will called, so ws handle server close into here
-			// 2. if readableStream is cancel, all controller.close/enqueue need skip,
-			// 3. but from testing controller.error still work even if readableStream is cancel
+			// 流被取消了，多半是出问题了
 			if (readableStreamCancel) {
 				return;
 			}
@@ -335,6 +295,7 @@ function processDynamicProtocolHeader(
 	dynamicProtocolBuffer,
 	userID
 ) {
+	// 协议头部解析，这是“身份验证”与“路由”的关键
 	if (dynamicProtocolBuffer.byteLength < 24) {
 		return {
 			hasError: true,
@@ -344,6 +305,7 @@ function processDynamicProtocolHeader(
 	const version = new Uint8Array(dynamicProtocolBuffer.slice(0, 1));
 	let isValidUser = false;
 	let isUDP = false;
+	// 校验用户 ID，确保是“自家兄弟”
 	if (stringify(new Uint8Array(dynamicProtocolBuffer.slice(1, 17))) === userID) {
 		isValidUser = true;
 	}
@@ -375,7 +337,7 @@ function processDynamicProtocolHeader(
 	}
 	const portIndex = 18 + optLength + 1;
 	const portBuffer = dynamicProtocolBuffer.slice(portIndex, portIndex + 2);
-	// port is big-Endian in raw data etc 80 == 0x005d
+	// 端口是大端序
 	const portRemote = new DataView(portBuffer).getUint16(0);
 
 	let addressIndex = portIndex + 2;
@@ -384,7 +346,7 @@ function processDynamicProtocolHeader(
 	);
 
 	// 1--> ipv4  addressLength =4
-	// 2--> domain name addressLength=addressBuffer[1]
+	// 2--> domain name
 	// 3--> ipv6  addressLength =16
 	const addressType = addressBuffer[0];
 	let addressLength = 0;
@@ -452,12 +414,12 @@ function processDynamicProtocolHeader(
  * @param {*} log 
  */
 async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponseHeader, retry, log) {
-	// remote--> ws
+	// remote--> ws (数据流向：从远程目标到 WebSocket)
 	let remoteChunkCount = 0;
 	let chunks = [];
 	/** @type {ArrayBuffer | null} */
 	let dynamicProtocolHeader = dynamicProtocolResponseHeader;
-	let hasIncomingData = false; // check if remoteSocket has incoming data
+	let hasIncomingData = false; // 检查远程 Socket 是否有传入数据
 	await remoteSocket.readable
 		.pipeTo(
 			new WritableStream({
@@ -469,27 +431,22 @@ async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponse
 				 */
 				async write(chunk, controller) {
 					hasIncomingData = true;
-					// remoteChunkCount++;
 					if (webSocket.readyState !== WS_READY_STATE_OPEN) {
 						controller.error(
 							'webSocket.readyState is not open, maybe close'
 						);
 					}
 					if (dynamicProtocolHeader) {
+						// 首次发送带头部信息
 						webSocket.send(await new Blob([dynamicProtocolHeader, chunk]).arrayBuffer());
 						dynamicProtocolHeader = null;
 					} else {
-						// seems no need rate limit this, CF seems fix this??..
-						// if (remoteChunkCount > 20000) {
-						// 	// cf one package is 4096 byte(4kb),  4096 * 20000 = 80M
-						// 	await delay(1);
-						// }
+						// 后续直接发送数据
 						webSocket.send(chunk);
 					}
 				},
 				close() {
 					log(`remoteConnection!.readable is close with hasIncomingData is ${hasIncomingData}`);
-					// safeCloseWebSocket(webSocket); // no need server close websocket frist for some case will casue HTTP ERR_CONTENT_LENGTH_MISMATCH issue, client will send close event anyway.
 				},
 				abort(reason) {
 					console.error(`remoteConnection!.readable abort`, reason);
@@ -504,7 +461,11 @@ async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponse
 			safeCloseWebSocket(webSocket);
 		});
 
-	// retry logic has been moved to handleTCPOutBound, no longer needed here
+	// 如果 CF 连接 socket 没有收到任何数据，就尝试重试（如果重试函数存在）
+	if (hasIncomingData === false && retry) {
+		log(`retry`)
+		retry();
+	}
 }
 
 /**
@@ -516,7 +477,7 @@ function base64ToArrayBuffer(base64Str) {
 		return { error: null };
 	}
 	try {
-		// go use modified Base64 for URL rfc4648 which js atob not support
+		// Base64 解码，处理 URL 安全字符
 		base64Str = base64Str.replace(/-/g, '+').replace(/_/g, '/');
 		const decode = atob(base64Str);
 		const arryBuffer = Uint8Array.from(decode, (c) => c.charCodeAt(0));
@@ -531,6 +492,7 @@ function base64ToArrayBuffer(base64Str) {
  * @param {string} uuid 
  */
 function isValidUUID(uuid) {
+	// UUID 格式校验，确保是“合法身份”
 	const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[4][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 	return uuidRegex.test(uuid);
 }
@@ -543,6 +505,7 @@ const WS_READY_STATE_CLOSING = 2;
  */
 function safeCloseWebSocket(socket) {
 	try {
+		// 安全关闭 WebSocket，避免“意外”
 		if (socket.readyState === WS_READY_STATE_OPEN || socket.readyState === WS_READY_STATE_CLOSING) {
 			socket.close();
 		}
@@ -573,10 +536,9 @@ function stringify(arr, offset = 0) {
  * @param {(string)=> void} log 
  */
 async function handleDNSQuery(udpChunk, webSocket, dynamicProtocolResponseHeader, log) {
-	// no matter which DNS server client send, we alwasy use hard code one.
-	// beacsue someof DNS server is not support DNS over TCP
+	// DNS 查询处理，始终使用硬编码的 DNS 服务器
 	try {
-		const dnsServer = '8.8.4.4'; // change to 1.1.1.1 after cf fix connect own ip bug
+		const dnsServer = '8.8.4.4'; 
 		const dnsPort = 53;
 		/** @type {ArrayBuffer | null} */
 		let dynamicProtocolHeader = dynamicProtocolResponseHeader;
@@ -615,31 +577,14 @@ async function handleDNSQuery(udpChunk, webSocket, dynamicProtocolResponseHeader
 	}
 }
 
-/* ---------- NAT64 工具 ---------- */
-function convertToNAT64IPv6(ipv4) {
-  const parts = ipv4.split('.');
-  if (parts.length !== 4) throw new Error('无效的IPv4地址');
-  const hex = parts.map(p => Number(p).toString(16).padStart(2, '0'));
-  return `[2001:67c:2960:6464::${hex[0]}${hex[1]}:${hex[2]}${hex[3]}]`;
-}
-
-async function getIPv6ProxyAddress(domain) {
-  const r = await fetch(`https://1.1.1.1/dns-query?name=${domain}&type=A`, {
-    headers: { 'Accept': 'application/dns-json' }
-  });
-  const j = await r.json();
-  const a = j.Answer?.find(x => x.type === 1);
-  if (!a) throw new Error('无法解析域名的IPv4地址');
-  return convertToNAT64IPv6(a.data);
-}
-
 /**
  * * @param {string} userID 
  * @param {string | null} hostName
  * @returns {string}
  */
 function getDynamicProtocolConfig(userID, hostName) {
-	const protocol = 转码 + 转码2; // 使用拼接的协议名
+	// 生成 V2Ray 和 Clash-Meta 配置，这是“订阅信息”的载体
+	const protocol = 转码 + 转码2; 
 	const dynamicProtocolMain = 
 	`${protocol}${符号}${userID}@${hostName}:443`+
 	`?encryption=none&security=tls&sni=${hostName}&fp=randomized&type=ws&host=${hostName}&path=%2F%3Fed%3D2048#${hostName}`;
@@ -668,10 +613,6 @@ clash-meta
     headers:
       host: ${hostName}
 ---------------------------------------------------------------
-# 配置说明:
-# NAT64 功能已默认开启。
-# 在直连失败时会尝试通过 NAT64 转换 IPv4 地址并连接，
-# 之后如果 NAT64 仍不通，则会尝试使用 proxyIP。
 ################################################################
 `;
-}
+				     }
