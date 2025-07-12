@@ -22,7 +22,7 @@ if (!isValidUUID(userID)) {
 export default {
 	/**
 	 * @param {import("@cloudflare/workers-types").Request} request
-	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION?: string, SARCASM_MESSAGE?: string, 隐藏?: string, 嘲讽语?: string}} env // 增加了中文环境变量的类型提示
+	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION?: string, SARCASM_MESSAGE?: string, 隐藏?: string, 嘲讽语?: string, NAT64?: string}} env // 增加了中文环境变量的类型提示和 NAT64 变量
 	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
 	 * @returns {Promise<Response>}
 	 */
@@ -35,6 +35,7 @@ export default {
             // 优先级：先尝试英文变量名 (推荐)，如果不存在，再尝试中文变量名
             let 隐藏 = false; // 默认值
             let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿"; // 默认值
+            let enableNAT64 = true; // NAT64 默认开启
 
             if (env.HIDE_SUBSCRIPTION !== undefined) {
                 隐藏 = env.HIDE_SUBSCRIPTION === 'true';
@@ -47,6 +48,10 @@ export default {
             } else if (env.嘲讽语 !== undefined) { // 尝试读取中文变量名
                 嘲讽语 = env.嘲讽语;
             }
+
+            if (env.NAT64 !== undefined) {
+                enableNAT64 = env.NAT64 === 'true';
+            }
             // --- **新增逻辑结束** ---
 
             // --- **调试日志：请留意这里** ---
@@ -56,6 +61,8 @@ export default {
             console.log(`环境变量 SARCASM_MESSAGE 原始值 (英文): ${env.SARCASM_MESSAGE}`);
             console.log(`环境变量 嘲讽语 原始值 (中文): ${env.嘲讽语}`);
             console.log(`最终解析的嘲讽语: ${嘲讽语}`);
+            console.log(`环境变量 NAT64 原始值: ${env.NAT64}`);
+            console.log(`最终解析的布尔值 enableNAT64: ${enableNAT64}`);
             // --- **调试日志结束** ---
 
 
@@ -91,7 +98,7 @@ export default {
 				}
 			} else {
 				// 是 WebSocket 请求？那就去处理“秘密隧道”吧
-				return await dynamicProtocolOverWSHandler(request);
+				return await dynamicProtocolOverWSHandler(request, enableNAT64);
 			}
 		} catch (err) {
 			/** @type {Error} */ let e = err;
@@ -103,8 +110,9 @@ export default {
 
 /**
  * * @param {import("@cloudflare/workers-types").Request} request
+ * @param {boolean} enableNAT64
  */
-async function dynamicProtocolOverWSHandler(request) {
+async function dynamicProtocolOverWSHandler(request, enableNAT64) {
 
 	/** @type {import("@cloudflare/workers-types").WebSocket[]} */
 	// @ts-ignore
@@ -179,7 +187,7 @@ async function dynamicProtocolOverWSHandler(request) {
 				return handleDNSQuery(rawClientData, webSocket, dynamicProtocolResponseHeader, log);
 			}
 			// 处理 TCP 出站连接，真正的“连接世界”
-			handleTCPOutBound(remoteSocketWapper, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log);
+			handleTCPOutBound(remoteSocketWapper, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log, enableNAT64);
 		},
 		close() {
 			log(`readableWebSocketStream is close`);
@@ -209,9 +217,10 @@ async function dynamicProtocolOverWSHandler(request) {
  * @param {import("@cloudflare/workers-types").WebSocket} webSocket The WebSocket to pass the remote socket to.
  * @param {Uint8Array} dynamicProtocolResponseHeader The dynamicProtocol response header.
  * @param {function} log The logging function.
+ * @param {boolean} enableNAT64 Whether to enable NAT64.
  * @returns {Promise<void>} The remote socket.
  */
-async function handleTCPOutBound(remoteSocket, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log,) {
+async function handleTCPOutBound(remoteSocket, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log, enableNAT64) {
 	async function connectAndWrite(address, port) {
 		/** @type {import("@cloudflare/workers-types").Socket} */
 		// 建立与远程目标的 TCP 连接，这是数据的“出口”
@@ -239,7 +248,25 @@ async function handleTCPOutBound(remoteSocket, addressType, addressRemote, portR
 		remoteSocketToWS(tcpSocket, webSocket, dynamicProtocolResponseHeader, null, log);
 	}
 
-	let tcpSocket = await connectAndWrite(addressRemote, portRemote);
+    let targetAddress = addressRemote;
+    // 如果启用 NAT64 并且目标地址是 IPv4，则将其转换为 IPv6
+    if (enableNAT64 && addressType === 1) { // addressType 1 for IPv4
+        // 将 IPv4 地址转换为 IPv6 NAT64 前缀
+        // 假设使用 64:ff9b::/96 前缀，将 IPv4 地址的四个字节附加到后面
+        const ipv4Parts = addressRemote.split('.').map(Number);
+        if (ipv4Parts.length === 4) {
+            targetAddress = `64:ff9b::${ipv4Parts[0].toString(16)}:${ipv4Parts[1].toString(16)}${ipv4Parts[2].toString(16)}:${ipv4Parts[3].toString(16)}`;
+            log(`NAT64 enabled: converting IPv4 ${addressRemote} to IPv6 ${targetAddress}`);
+        } else {
+            log(`NAT64 enabled but invalid IPv4 address: ${addressRemote}`);
+        }
+    } else if (enableNAT64 && addressType === 3) {
+        log(`NAT64 enabled but target address is already IPv6: ${addressRemote}`);
+    } else if (!enableNAT64) {
+        log(`NAT64 is disabled.`);
+    }
+
+	let tcpSocket = await connectAndWrite(targetAddress, portRemote);
 
 	// 当远程 Socket 准备好后，将其“传递”给 WebSocket
 	// remote--> ws (数据流向：从远程目标到 WebSocket)
@@ -640,4 +667,4 @@ clash-meta
 ---------------------------------------------------------------
 ################################################################
 `;
-						      }
+}
