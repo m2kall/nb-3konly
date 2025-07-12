@@ -1,4 +1,4 @@
-// NAT64Utils (Integrated)
+// nat64Utils.js (Integrated)
 const DNS_QUERY_URL = 'https://1.1.1.1/dns-query';
 
 /**
@@ -87,9 +87,13 @@ export default {
                 嘲讽语 = env.嘲讽语;
             }
 
-            // --- 变量名已更新为 NAT64 ---
+            // --- 修复点：确保从 env.NAT64 读取值，并正确处理 undefined 和 "false" ---
             if (env.NAT64 !== undefined) {
-                enableNAT64 = env.NAT64 === 'true';
+                // 如果 env.NAT64 存在，将其转换为布尔值
+                enableNAT64 = env.NAT64 === 'true'; // 只有当字符串严格等于 "true" 时才为 true，否则为 false
+            } else {
+                // 如果 env.NAT64 未定义，则保持 enableNAT64 的默认值 (true)
+                enableNAT64 = true; 
             }
 
             // --- **调试日志：请留意这里** ---
@@ -720,4 +724,4 @@ clash-meta
 ---------------------------------------------------------------
 ################################################################
 `;
-		}
+}
