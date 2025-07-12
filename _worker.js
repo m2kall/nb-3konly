@@ -1,4 +1,4 @@
-// nat64Utils.js (Integrated)
+// Cloudflare Worker: VL over WebSocket + NAT64 + 兜底
 const DNS_QUERY_URL = 'https://1.1.1.1/dns-query';
 
 /**
