@@ -288,80 +288,6 @@ async function handleTCPOutBound(remoteSocketWapper, addressRemote, portRemote, 
 }
 
 
-// --- NAT64 辅助函数 (从之前的代码中提取并整合) ---
-
-// 将IPv4地址转换为NAT64 IPv6地址
-function convertToNAT64IPv6(ipv4Address) {
-    const parts = ipv4Address.split('.');
-    if (parts.length !== 4) {
-        throw new Error('Invalid IPv4 address format for NAT64 conversion.');
-    }
-    
-    // 将每个部分转换为16进制
-    const hex = parts.map(part => {
-        const num = parseInt(part, 10);
-        if (num < 0 || num > 255) {
-            throw new Error('Invalid IPv4 address segment for NAT64 conversion.');
-        }
-        return num.toString(16).padStart(2, '0');
-    });
-    
-    // 构造NAT64 IPv6地址：例如 2001:67c:2960:6464::xxxx:xxxx
-    // 这里使用 Cloudflare 提供的公开 NAT64 前缀
-    return `2001:67c:2960:6464::${hex[0]}${hex[1]}:${hex[2]}${hex[3]}`;
-}
-
-// 获取域名的IPv4地址并转换为NAT64 IPv6地址
-async function getNAT64IPv6FromDomain(domain) {
-    try {
-        const dnsQuery = await fetch(`https://1.1.1.1/dns-query?name=${domain}&type=A`, {
-            headers: {
-                'Accept': 'application/dns-json'
-            }
-        });
-        
-        if (!dnsQuery.ok) {
-            throw new Error(`DNS query failed with status: ${dnsQuery.status}`);
-        }
-
-        const dnsResult = await dnsQuery.json();
-        if (dnsResult.Answer && dnsResult.Answer.length > 0) {
-            // 找到第一个A记录
-            const aRecord = dnsResult.Answer.find(record => record.type === 1);
-            if (aRecord) {
-                const ipv4Address = aRecord.data;
-                return convertToNAT64IPv6(ipv4Address);
-            }
-        }
-        throw new Error('No A record found for domain or unable to resolve IPv4 address.');
-    } catch (err) {
-        throw new Error(`DNS resolution for NAT64 failed: ${err.message}`);
-    }
-}
-
-// 结合 NAT64 转换和连接的函数
-async function connectViaNAT64(address, port) {
-    let nat64Address;
-    const ipv4Regex = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
-
-    if (ipv4Regex.test(address)) {
-        nat64Address = convertToNAT64IPv6(address);
-    } else {
-        // 如果是域名，先解析IPv4，再转换为NAT64 IPv6
-        nat64Address = await getNAT64IPv6FromDomain(address);
-    }
-
-    // 注意：`connect` 函数的 `hostname` 接受 IPv6 地址，但需要用方括号 `[]` 包裹
-    const tcpSocket = connect({
-        hostname: `[${nat64Address}]`, // IPv6 地址需要方括号
-        port: port,
-    });
-    await tcpSocket.opened;
-    return { tcpSocket }; // 返回一个对象，与之前的 connectViaNAT64 兼容
-}
-
-// --- 其它辅助函数 (保持不变) ---
-
 /**
  * * @param {import("@cloudflare/workers-types").WebSocket} webSocketServer
  * @param {string} earlyDataHeader for ws 0rtt
@@ -556,8 +482,6 @@ function processDynamicProtocolHeader(
  */
 async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponseHeader, retry, log) {
 	// remote--> ws (数据流向：从远程目标到 WebSocket)
-	// let remoteChunkCount = 0; // 不再需要
-	// let chunks = []; // 不再需要
 	/** @type {ArrayBuffer | null} */
 	let dynamicProtocolHeader = dynamicProtocolResponseHeader;
 	let hasIncomingData = false; // 检查远程 Socket 是否有传入数据
@@ -762,7 +686,7 @@ clash-meta
 `;
 }
 
-// --- 新增/移动的 NAT64 辅助函数 ---
+// --- NAT64 辅助函数 (这些是唯一应该保留的定义) ---
 
 // 将IPv4地址转换为NAT64 IPv6地址
 function convertToNAT64IPv6(ipv4Address) {
@@ -826,4 +750,4 @@ async function connectViaNAT64(address, port) {
     });
     await tcpSocket.opened;
     return { tcpSocket }; 
-		}
+				       }
