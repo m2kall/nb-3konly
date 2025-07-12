@@ -10,7 +10,7 @@ let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
 let proxyIP = 'proxyip.zone.id';
 
-// Moved these to be accessed via env in the fetch function for external injection
+// 这些变量现在将通过 env 对象在 fetch 函数中获取
 // let 隐藏 = false;
 // let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿";
 
@@ -22,7 +22,7 @@ if (!isValidUUID(userID)) {
 export default {
 	/**
 	 * @param {import("@cloudflare/workers-types").Request} request
-	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION: string, SARCASM_MESSAGE: string}} env // Added HIDE_SUBSCRIPTION and SARCASM_MESSAGE
+	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION?: string, SARCASM_MESSAGE?: string, 隐藏?: string, 嘲讽语?: string}} env // 增加了中文环境变量的类型提示
 	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
 	 * @returns {Promise<Response>}
 	 */
@@ -31,12 +31,33 @@ export default {
 			userID = env.UUID || userID;
 			proxyIP = env.PROXYIP || proxyIP;
 
-			// --- Key Changes Here ---
-			// Retrieve HIDE_SUBSCRIPTION from env, default to 'false' if not set
-			const 隐藏 = env.HIDE_SUBSCRIPTION === 'true';
-			// Retrieve SARCASM_MESSAGE from env, default to the original message
-			const 嘲讽语 = env.SARCASM_MESSAGE || "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿";
-			// --- End Key Changes ---
+			// --- **新增逻辑：处理中文环境变量名映射** ---
+            // 优先级：先尝试英文变量名 (推荐)，如果不存在，再尝试中文变量名
+            let 隐藏 = false; // 默认值
+            let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿"; // 默认值
+
+            if (env.HIDE_SUBSCRIPTION !== undefined) {
+                隐藏 = env.HIDE_SUBSCRIPTION === 'true';
+            } else if (env.隐藏 !== undefined) { // 尝试读取中文变量名
+                隐藏 = env.隐藏 === 'true';
+            }
+
+            if (env.SARCASM_MESSAGE !== undefined) {
+                嘲讽语 = env.SARCASM_MESSAGE;
+            } else if (env.嘲讽语 !== undefined) { // 尝试读取中文变量名
+                嘲讽语 = env.嘲讽语;
+            }
+            // --- **新增逻辑结束** ---
+
+            // --- **调试日志：请留意这里** ---
+            console.log(`环境变量 HIDE_SUBSCRIPTION 原始值 (英文): ${env.HIDE_SUBSCRIPTION}`);
+            console.log(`环境变量 隐藏 原始值 (中文): ${env.隐藏}`);
+            console.log(`最终解析的布尔值 隐藏: ${隐藏}`);
+            console.log(`环境变量 SARCASM_MESSAGE 原始值 (英文): ${env.SARCASM_MESSAGE}`);
+            console.log(`环境变量 嘲讽语 原始值 (中文): ${env.嘲讽语}`);
+            console.log(`最终解析的嘲讽语: ${嘲讽语}`);
+            // --- **调试日志结束** ---
+
 
 			const upgradeHeader = request.headers.get('Upgrade');
 			if (!upgradeHeader || upgradeHeader !== 'websocket') {
@@ -79,9 +100,6 @@ export default {
 		}
 	},
 };
-
-
-
 
 /**
  * * @param {import("@cloudflare/workers-types").Request} request
@@ -622,4 +640,4 @@ clash-meta
 ---------------------------------------------------------------
 ################################################################
 `;
-}
+						      }
