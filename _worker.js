@@ -1,21 +1,16 @@
 let 转码 = 'vl', 转码2 = 'ess', 符号 = '://';
 
-// version base on commit 58686d5d125194d34a1137913b3a64ddcf55872f, time is 2024-11-27 09:26:02 UTC.
 // @ts-ignore
 import { connect } from 'cloudflare:sockets';
 
-// How to generate your own UUID:
-// [Windows] Press "Win + R", input cmd and run:  Powershell -NoExit -Command "[guid]::NewGuid()"
-let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4'; // <<< IMPORTANT: Replace with your actual UUID
+// IMPORTANT: Replace with your actual UUID.
+// If you set an environment variable named 'UUID' in Cloudflare,
+// that will override this value.
+let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 
-let proxyIP = '';
+let proxyIP = ''; // Optional: Set an environment variable 'PROXYIP' to use.
 
-// 控制订阅页面是否隐藏。
-// 设置为 true 则隐藏订阅地址，显示嘲讽语。
-// 设置为 false 则显示订阅地址。
-let 隐藏 = false; // 默认值：false (不隐藏，显示订阅地址)
-
-// 订阅页面隐藏时显示的嘲讽语
+// The mocking message displayed when the subscription page is hidden.
 let 嘲讽语 = "哎呀你找到了我，但是我就是不给你看，气不气，嘿嘿嘿";
 
 
@@ -25,28 +20,38 @@ if (!isValidUUID(userID)) {
 
 export default {
 	/**
-	 * @param {import("@cloudflare/workers-types").Request} request
-	 * @param {{UUID: string, PROXYIP: string}} env
-	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
+	 * Main entry point for the Worker.
+	 * @param {import("@cloudflare/workers-types").Request} request The incoming request.
+	 * @param {{UUID: string, PROXYIP: string, HIDE_SUBSCRIPTION: string}} env Environment variables configured in Cloudflare.
+	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx The execution context.
 	 * @returns {Promise<Response>}
 	 */
 	async fetch(request, env, ctx) {
 		try {
-			// 从环境变量或默认值获取 userID 和 proxyIP
+			// Override default userID/proxyIP with environment variables if they exist.
 			userID = env.UUID || userID;
 			proxyIP = env.PROXYIP || proxyIP;
 
+            // CONTROL VARIABLE FOR SUBSCRIPTION VISIBILITY:
+            // Reads the 'HIDE_SUBSCRIPTION' environment variable.
+            // If HIDE_SUBSCRIPTION is "true" (case-insensitive), it becomes boolean true.
+            // Otherwise (if "false", undefined, or anything else), it defaults to boolean false (visible).
+            const hideSubscriptionPage = (env.HIDE_SUBSCRIPTION || 'false').toLowerCase() === 'true';
+
 			const upgradeHeader = request.headers.get('Upgrade');
+
+			// Handle non-WebSocket requests (HTTP requests to your worker).
 			if (!upgradeHeader || upgradeHeader !== 'websocket') {
 				const url = new URL(request.url);
 				switch (url.pathname) {
 					case '/':
-						// 根路径，显示请求的 Cloudflare 属性
+						// Root path: Respond with Cloudflare request properties (for debugging/info).
 						return new Response(JSON.stringify(request.cf), { status: 200 });
 					case `/${userID}`: {
-						// 当访问 yourdomain.com/your-uuid 时，根据 '隐藏' 变量决定响应
-						if (隐藏) {
-							// 如果隐藏为 true，则返回嘲讽语
+						// This is the specific path for your subscription page.
+						// Its behavior is controlled by the 'hideSubscriptionPage' variable.
+						if (hideSubscriptionPage) {
+							// If hideSubscriptionPage is true, return the mocking message.
 							return new Response(嘲讽语, {
 								status: 200,
 								headers: {
@@ -54,7 +59,7 @@ export default {
 								}
 							});
 						} else {
-							// 如果隐藏为 false，则生成并返回订阅配置
+							// If hideSubscriptionPage is false (default), return the subscription configuration.
 							const dynamicProtocolConfig = getDynamicProtocolConfig(userID, request.headers.get('Host'));
 							return new Response(`${dynamicProtocolConfig}`, {
 								status: 200,
@@ -65,32 +70,37 @@ export default {
 						}
 					}
 					default:
-						// 其他未匹配的路径返回 404
+						// Any other path not matching root or UUID will return 404 Not Found.
 						return new Response('Not found', { status: 404 });
 				}
 			} else {
-				// 处理 WebSocket 升级请求，用于代理功能
+				// Handle WebSocket upgrade requests for proxy functionality.
 				return await dynamicProtocolOverWSHandler(request);
 			}
 		} catch (err) {
 			/** @type {Error} */ let e = err;
-			// 捕获并返回任何发生的错误
+			// Catch and return any errors as a response.
 			return new Response(e.toString());
 		}
 	},
 };
 
+---
+
+## Helper Functions (Unchanged)
+
+```javascript
 /**
- * 处理 WebSocket 请求，建立秘密隧道进行代理。
- * @param {import("@cloudflare/workers-types").Request} request
+ * Handles dynamic protocol over WebSocket, forwarding traffic.
+ * @param {import("@cloudflare/workers-types").Request} request The incoming WebSocket upgrade request.
  */
 async function dynamicProtocolOverWSHandler(request) {
-	// 创建 WebSocket 配对
+	// Create a WebSocket pair for communication.
 	// @ts-ignore
 	const webSocketPair = new WebSocketPair();
 	const [client, webSocket] = Object.values(webSocketPair);
 
-	webSocket.accept();
+	webSocket.accept(); // Accept the WebSocket connection.
 
 	let address = '';
 	let portWithRandomLog = '';
@@ -107,22 +117,22 @@ async function dynamicProtocolOverWSHandler(request) {
 	};
 	let isDns = false;
 
-	// WebSocket -> 远程目标 (数据流向：从 WebSocket 到远程目标)
+	// Pipe data from WebSocket to the remote target.
 	readableWebSocketStream.pipeTo(new WritableStream({
 		async write(chunk, controller) {
 			if (isDns) {
-				// 如果是 DNS 查询，特殊处理
+				// Special handling for DNS queries.
 				return await handleDNSQuery(chunk, webSocket, null, log);
 			}
 			if (remoteSocketWapper.value) {
-				// 远程连接已建立，直接写入数据
+				// If remote connection is established, write data directly.
 				const writer = remoteSocketWapper.value.writable.getWriter()
 				await writer.write(chunk);
 				writer.releaseLock();
 				return;
 			}
 
-			// 解析协议头部，获取目标地址和端口
+			// Process the dynamic protocol header to get target info.
 			const {
 				hasError,
 				message,
@@ -137,10 +147,10 @@ async function dynamicProtocolOverWSHandler(request) {
 			portWithRandomLog = `${portRemote}--${Math.random()} ${isUDP ? 'udp ' : 'tcp '
 				} `;
 			if (hasError) {
-				// 协议解析出错，抛出错误中断连接
+				// If header processing fails, throw an error.
 				throw new Error(message); 
 			}
-			// UDP 代理目前仅支持 DNS (端口 53)
+			// UDP proxy is currently only enabled for DNS (port 53).
 			if (isUDP) {
 				if (portRemote === 53) {
 					isDns = true;
@@ -148,14 +158,14 @@ async function dynamicProtocolOverWSHandler(request) {
 					throw new Error('UDP proxy only enable for DNS which is port 53'); 
 				}
 			}
-			// 响应头部版本信息
+			// Prepare the response header.
 			const dynamicProtocolResponseHeader = new Uint8Array([dynamicProtocolVersion[0], 0]);
 			const rawClientData = chunk.slice(rawDataIndex);
 
 			if (isDns) {
 				return handleDNSQuery(rawClientData, webSocket, dynamicProtocolResponseHeader, log);
 			}
-			// 处理 TCP 出站连接
+			// Handle outbound TCP connection.
 			handleTCPOutBound(remoteSocketWapper, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log);
 		},
 		close() {
@@ -168,42 +178,43 @@ async function dynamicProtocolOverWSHandler(request) {
 		log('readableWebSocketStream pipeTo error', err);
 	});
 
-	// 返回 WebSocket 响应
+	// Return the WebSocket response.
 	return new Response(null, {
-		status: 101,
+		status: 101, // 101 Switching Protocols for WebSocket handshake.
 		// @ts-ignore
 		webSocket: client,
 	});
 }
 
 /**
- * 处理出站 TCP 连接。
- * @param {any} remoteSocket
- * @param {number} addressType 远程地址类型。
- * @param {string} addressRemote 远程地址。
- * @param {number} portRemote 远程端口。
- * @param {Uint8Array} rawClientData 原始客户端数据。
- * @param {import("@cloudflare/workers-types").WebSocket} webSocket WebSocket 实例。
- * @param {Uint8Array} dynamicProtocolResponseHeader 动态协议响应头。
- * @param {function} log 日志函数。
+ * Handles outbound TCP connections.
+ * @param {any} remoteSocket Wrapper for the remote socket.
+ * @param {number} addressType The remote address type to connect to.
+ * @param {string} addressRemote The remote address to connect to.
+ * @param {number} portRemote The remote port to connect to.
+ * @param {Uint8Array} rawClientData The raw client data to write initially.
+ * @param {import("@cloudflare/workers-types").WebSocket} webSocket The WebSocket to pass the remote socket data to.
+ * @param {Uint8Array} dynamicProtocolResponseHeader The dynamic protocol response header.
+ * @param {function} log The logging function.
  * @returns {Promise<void>}
  */
 async function handleTCPOutBound(remoteSocket, addressType, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log,) {
 	async function connectAndWrite(address, port) {
 		/** @type {import("@cloudflare/workers-types").Socket} */
+		// Establish a TCP connection to the remote target.
 		const tcpSocket = connect({
 			hostname: address,
 			port: port,
 		});
 		remoteSocket.value = tcpSocket;
 		log(`connected to ${address}:${port}`);
-		const writer = tcpSocket.writable.getWriter();
-		await writer.write(rawClientData); // 首次写入客户端数据（例如 TLS 握手数据）
+		const writer = tcpSocket.writable.getWriter()
+		await writer.write(rawClientData); // Write initial client data (e.g., TLS handshake).
 		writer.releaseLock();
 		return tcpSocket;
 	}
 
-	// 如果 CF 的 TCP 连接没有收到数据，就尝试“重定向”IP (可选的代理IP)
+	// Retry mechanism if the initial CF TCP connection receives no data.
 	async function retry() {
 		let tcpSocket = await connectAndWrite(proxyIP || addressRemote, portRemote);
 		tcpSocket.closed.catch(error => {
@@ -216,15 +227,15 @@ async function handleTCPOutBound(remoteSocket, addressType, addressRemote, portR
 
 	let tcpSocket = await connectAndWrite(addressRemote, portRemote);
 
-	// 将远程 Socket 的数据流向 WebSocket
+	// Pipe data from the remote socket back to the WebSocket.
 	remoteSocketToWS(tcpSocket, webSocket, dynamicProtocolResponseHeader, retry, log);
 }
 
 /**
- * 创建一个可读的 WebSocket 流。
+ * Creates a readable stream from a WebSocket.
  * @param {import("@cloudflare/workers-types").WebSocket} webSocketServer
- * @param {string} earlyDataHeader 用于 WebSocket 0-RTT 的早期数据头。
- * @param {(info: string)=> void} log 日志函数。
+ * @param {string} earlyDataHeader For WebSocket 0-RTT.
+ * @param {(info: string)=> void} log Logging function.
  */
 function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
 	let readableStreamCancel = false;
@@ -249,7 +260,7 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
 				log('webSocketServer has error');
 				controller.error(err);
 			});
-			// 处理 WebSocket 0-RTT 的早期数据
+			// Handle early data for WebSocket 0-RTT.
 			const { earlyData, error } = base64ToArrayBuffer(earlyDataHeader);
 			if (error) {
 				controller.error(error);
@@ -259,7 +270,7 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
 		},
 
 		pull(controller) {
-			// 如果 WebSocket 可以停止读取（当流满时），我们可以实现背压
+			// This could be used for backpressure if the WebSocket could stop reading.
 		},
 		cancel(reason) {
 			if (readableStreamCancel) {
@@ -275,10 +286,10 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
 }
 
 /**
- * 处理动态协议头部。
- * @param {ArrayBuffer} dynamicProtocolBuffer 动态协议数据。
- * @param {string} userID 用户ID。
- * @returns {object} 解析结果。
+ * Processes the dynamic protocol header for connection details.
+ * @param {ArrayBuffer} dynamicProtocolBuffer The incoming data buffer.
+ * @param {string} userID The expected user ID for validation.
+ * @returns {object} Parsed header details or an error object.
  */
 function processDynamicProtocolHeader(
 	dynamicProtocolBuffer,
@@ -293,7 +304,7 @@ function processDynamicProtocolHeader(
 	const version = new Uint8Array(dynamicProtocolBuffer.slice(0, 1));
 	let isValidUser = false;
 	let isUDP = false;
-	// 校验用户 ID
+	// Validate User ID.
 	if (stringify(new Uint8Array(dynamicProtocolBuffer.slice(1, 17))) === userID) {
 		isValidUser = true;
 	}
@@ -312,7 +323,6 @@ function processDynamicProtocolHeader(
 
 	// 0x01 TCP, 0x02 UDP, 0x03 MUX
 	if (command === 1) {
-		// TCP
 	} else if (command === 2) {
 		isUDP = true;
 	} else {
@@ -323,7 +333,7 @@ function processDynamicProtocolHeader(
 	}
 	const portIndex = 18 + optLength + 1;
 	const portBuffer = dynamicProtocolBuffer.slice(portIndex, portIndex + 2);
-	// 端口是大端序
+	// Port is Big-Endian.
 	const portRemote = new DataView(portBuffer).getUint16(0);
 
 	let addressIndex = portIndex + 2;
@@ -388,16 +398,16 @@ function processDynamicProtocolHeader(
 }
 
 /**
- * 将远程 Socket 的数据流向 WebSocket。
- * @param {import("@cloudflare/workers-types").Socket} remoteSocket 远程 Socket 实例。
- * @param {import("@cloudflare/workers-types").WebSocket} webSocket WebSocket 实例。
- * @param {ArrayBuffer} dynamicProtocolResponseHeader 动态协议响应头。
- * @param {(() => Promise<void>) | null} retry 重试函数。
- * @param {*} log 日志函数。
+ * Pipes data from a remote socket to a WebSocket.
+ * @param {import("@cloudflare/workers-types").Socket} remoteSocket The remote socket.
+ * @param {import("@cloudflare/workers-types").WebSocket} webSocket The WebSocket connection.
+ * @param {ArrayBuffer} dynamicProtocolResponseHeader The dynamic protocol response header.
+ * @param {(() => Promise<void>) | null} retry Optional retry function.
+ * @param {*} log Logging function.
  */
 async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponseHeader, retry, log) {
 	let dynamicProtocolHeader = dynamicProtocolResponseHeader;
-	let hasIncomingData = false; // 检查远程 Socket 是否有传入数据
+	let hasIncomingData = false; // Check if remote socket has incoming data.
 	await remoteSocket.readable
 		.pipeTo(
 			new WritableStream({
@@ -411,11 +421,11 @@ async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponse
 						controller.error('webSocket.readyState is not open, maybe close');
 					}
 					if (dynamicProtocolHeader) {
-						// 首次发送带头部信息
+						// Send initial data with header.
 						webSocket.send(await new Blob([dynamicProtocolHeader, chunk]).arrayBuffer());
 						dynamicProtocolHeader = null;
 					} else {
-						// 后续直接发送数据
+						// Send subsequent data directly.
 						webSocket.send(chunk);
 					}
 				},
@@ -432,7 +442,7 @@ async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponse
 			safeCloseWebSocket(webSocket);
 		});
 
-	// 如果 CF 连接 socket 没有收到任何数据，就尝试重试（如果重试函数存在）
+	// If no incoming data and retry function exists, try retrying.
 	if (hasIncomingData === false && retry) {
 		log(`retry`)
 		retry();
@@ -440,16 +450,16 @@ async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponse
 }
 
 /**
- * 将 Base64 字符串转换为 ArrayBuffer。
+ * Converts a Base64 string to an ArrayBuffer.
  * @param {string} base64Str 
- * @returns {object} 包含早期数据或错误的对象。
+ * @returns {object} Object containing earlyData ArrayBuffer or an error.
  */
 function base64ToArrayBuffer(base64Str) {
 	if (!base64Str) {
 		return { error: null };
 	}
 	try {
-		base64Str = base64Str.replace(/-/g, '+').replace(/_/g, '/');
+		base64Str = base64Str.replace(/-/g, '+').replace(/_/g, '/'); // Handle URL-safe Base64.
 		const decode = atob(base64Str);
 		const arryBuffer = Uint8Array.from(decode, (c) => c.charCodeAt(0));
 		return { earlyData: arryBuffer.buffer, error: null };
@@ -459,7 +469,7 @@ function base64ToArrayBuffer(base64Str) {
 }
 
 /**
- * 校验 UUID 格式。
+ * Basic validation for UUID format.
  * @param {string} uuid 
  */
 function isValidUUID(uuid) {
@@ -470,7 +480,7 @@ function isValidUUID(uuid) {
 const WS_READY_STATE_OPEN = 1;
 const WS_READY_STATE_CLOSING = 2;
 /**
- * 安全关闭 WebSocket 连接。
+ * Safely closes a WebSocket connection.
  * @param {import("@cloudflare/workers-types").WebSocket} socket
  */
 function safeCloseWebSocket(socket) {
@@ -499,15 +509,15 @@ function stringify(arr, offset = 0) {
 }
 
 /**
- * 处理 DNS 查询。
- * @param {ArrayBuffer} udpChunk UDP 数据块。
- * @param {import("@cloudflare/workers-types").WebSocket} webSocket WebSocket 实例。
- * @param {ArrayBuffer} dynamicProtocolResponseHeader 动态协议响应头。
- * @param {(string)=> void} log 日志函数。
+ * Handles DNS queries, hardcoding to 8.8.4.4 for now.
+ * @param {ArrayBuffer} udpChunk UDP data chunk.
+ * @param {import("@cloudflare/workers-types").WebSocket} webSocket WebSocket instance.
+ * @param {ArrayBuffer} dynamicProtocolResponseHeader Dynamic protocol response header.
+ * @param {(string)=> void} log Logging function.
  */
 async function handleDNSQuery(udpChunk, webSocket, dynamicProtocolResponseHeader, log) {
 	try {
-		const dnsServer = '8.8.4.4'; // 硬编码的 DNS 服务器
+		const dnsServer = '8.8.4.4'; 
 		const dnsPort = 53;
 		/** @type {ArrayBuffer | null} */
 		let dynamicProtocolHeader = dynamicProtocolResponseHeader;
@@ -545,10 +555,10 @@ async function handleDNSQuery(udpChunk, webSocket, dynamicProtocolResponseHeader
 }
 
 /**
- * 生成动态协议配置（V2Ray 和 Clash-Meta 订阅）。
- * @param {string} userID 用户ID。
- * @param {string | null} hostName 主机名。
- * @returns {string} 订阅配置字符串。
+ * Generates V2Ray and Clash-Meta subscription configurations.
+ * @param {string} userID User ID for the configuration.
+ * @param {string | null} hostName The hostname from the request.
+ * @returns {string} The formatted subscription string.
  */
 function getDynamicProtocolConfig(userID, hostName) {
 	const protocol = 转码 + 转码2; 
