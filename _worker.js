@@ -1,4 +1,4 @@
-// Cloudflare Worker: VL over WebSocket + NAT64 + 兜底
+// nat64Utils.js (Integrated)
 const DNS_QUERY_URL = 'https://1.1.1.1/dns-query';
 
 /**
@@ -87,9 +87,12 @@ export default {
                 嘲讽语 = env.嘲讽语;
             }
 
-            // --- 变量名已更新为 NAT64 ---
+            // --- 修复点：确保从 env.NAT64 读取值 ---
             if (env.NAT64 !== undefined) {
                 enableNAT64 = env.NAT64 === 'true';
+            } else {
+                // 如果 env.NAT64 未定义，则保持 enableNAT64 的默认值 true
+                enableNAT64 = true; 
             }
 
             // --- **调试日志：请留意这里** ---
