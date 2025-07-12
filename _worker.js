@@ -87,14 +87,13 @@ export default {
                 嘲讽语 = env.嘲讽语;
             }
 
-            // --- 修复点：确保从 env.NAT64 读取值，并正确处理 undefined 和 "false" ---
+            // --- 最终修复点：更健壮的 NAT64 环境变量解析 ---
+            // 如果 env.NAT64 这个环境变量被设置了，就用它的值来决定 enableNAT64
+            // 否则，保持 enableNAT64 的默认值 (true)
             if (env.NAT64 !== undefined) {
-                // 如果 env.NAT64 存在，将其转换为布尔值
                 enableNAT64 = env.NAT64 === 'true'; // 只有当字符串严格等于 "true" 时才为 true，否则为 false
-            } else {
-                // 如果 env.NAT64 未定义，则保持 enableNAT64 的默认值 (true)
-                enableNAT64 = true; 
             }
+            // --- 最终修复点结束 ---
 
             // --- **调试日志：请留意这里** ---
             console.log(`环境变量 HIDE_SUBSCRIPTION 原始值 (英文): ${env.HIDE_SUBSCRIPTION}`);
@@ -549,7 +548,6 @@ async function remoteSocketToWS(remoteSocket, webSocket, dynamicProtocolResponse
 						webSocket.send(await new Blob([dynamicProtocolHeader, chunk]).arrayBuffer());
 						dynamicProtocolHeader = null;
 					} else {
-						// 后续直接发送数据
 						webSocket.send(chunk);
 					}
 				},
