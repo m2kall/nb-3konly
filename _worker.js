@@ -563,7 +563,7 @@ function stringify(arr, offset = 0) {
 async function handleDNSQuery(udpChunk, webSocket, dynamicProtocolResponseHeader, log) {
 	// DNS 查询处理，始终使用硬编码的 DNS 服务器
 	try {
-		const dnsServer = '8.8.4.4'; 
+		const dnsServer = '8.8.8.8'; 
 		const dnsPort = 53;
 		/** @type {ArrayBuffer | null} */
 		let dynamicProtocolHeader = dynamicProtocolResponseHeader;
