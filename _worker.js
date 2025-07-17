@@ -14,6 +14,10 @@ let proxyIP = 'proxyip.zone.id'; // 确保这里有默认值或者通过环境�
 let NAT64 = true; // 默认开启 NAT64
 // --- 结束新增 ---
 
+// 默认要强制走 NAT64 的域名，支持前缀“*”通配符
+let proxydomains = ["*twitch.tv", "*ttvnw.net", "*tapecontent.net", "*cloudatacdn.com", "*.loadshare.org"];
+
+
 if (!isValidUUID(userID)) {
 	throw new Error('uuid is not valid');
 }
@@ -235,77 +239,110 @@ async function dynamicProtocolOverWSHandler(request, fallbackProxyIP) {
  */
 async function handleTCPOutBound(remoteSocketWapper, addressRemote, portRemote, rawClientData, webSocket, dynamicProtocolResponseHeader, log, fallbackProxyIP, enableNAT64) {
 	let tcpSocket;
-	
-	// --- 尝试 1: 直连 ---
-	try {
-		log(`[Attempt 1/3] Attempting direct connection to ${addressRemote}:${portRemote}`);
-		tcpSocket = connect({
-			hostname: addressRemote, // 直接使用原始地址
-			port: portRemote,
-		});
-		await tcpSocket.opened; // 等待连接建立
-		log(`[Success 1/3] Successfully connected directly to ${addressRemote}:${portRemote}`);
+	const shouldForceNAT64 = isForcedNAT64Domain(addressRemote); // Check if this domain should force NAT64
 
-	} catch (directError) {
-		console.error(`[Error 1/3] Direct connection failed for ${addressRemote}:${portRemote}:`, directError.stack || directError.message || directError);
-		
-		// --- 尝试 2: 回退到 NAT64 (如果开启) ---
-		if (enableNAT64) { // 检查 NAT64 是否开启
-			try {
-				log(`[Attempt 2/3] Direct failed, attempting NAT64 connection to ${addressRemote}:${portRemote}`);
-				// connectViaNAT64 应该处理 IPv4/域名到 NAT64 IPv6 的转换和连接
-				const { tcpSocket: nat64Socket } = await connectViaNAT64(addressRemote, portRemote);
-				tcpSocket = nat64Socket;
-				log(`[Success 2/3] Successfully connected via NAT64 to ${addressRemote}:${portRemote}`);
+	if (shouldForceNAT64) {
+        log(`[Forced NAT64] Attempting NAT64 connection for ${addressRemote}:${portRemote} (matched proxydomains)`);
+        try {
+            const { tcpSocket: nat64Socket } = await connectViaNAT64(addressRemote, portRemote);
+            tcpSocket = nat64Socket;
+            log(`[Success] Forced NAT64 connected via NAT64 to ${addressRemote}:${portRemote}`);
+        } catch (nat64Error) {
+            console.error(`[Error] Forced NAT64 connection failed for ${addressRemote}:${portRemote}:`, nat64Error.stack || nat64Error.message || nat64Error);
+            // If forced NAT64 fails, fall back to proxyIP
+            if (fallbackProxyIP) {
+                log(`[Fallback] Forced NAT64 failed, attempting to fall back to proxyIP: ${fallbackProxyIP}:${portRemote}`);
+                try {
+                    tcpSocket = connect({
+                        hostname: fallbackProxyIP,
+                        port: portRemote,
+                    });
+                    await tcpSocket.opened;
+                    log(`[Success] Connected via proxyIP to ${fallbackProxyIP}:${portRemote}`);
+                } catch (proxyIPError) {
+                    console.error(`[Error] Fallback to proxyIP failed for ${fallbackProxyIP}:${portRemote}:`, proxyIPError.stack || proxyIPError.message || proxyIPError);
+                    safeCloseWebSocket(webSocket);
+                    return;
+                }
+            } else {
+                console.error(`[Error] Forced NAT64 failed and no fallback proxyIP provided. Closing WebSocket.`);
+                safeCloseWebSocket(webSocket);
+                return;
+            }
+        }
+    } else {
+        // Original logic: Direct -> NAT64 (if enabled) -> ProxyIP
+        // --- 尝试 1: 直连 ---
+        try {
+            log(`[Attempt 1/3] Attempting direct connection to ${addressRemote}:${portRemote}`);
+            tcpSocket = connect({
+                hostname: addressRemote, // 直接使用原始地址
+                port: portRemote,
+            });
+            await tcpSocket.opened; // 等待连接建立
+            log(`[Success 1/3] Successfully connected directly to ${addressRemote}:${portRemote}`);
 
-			} catch (nat64Error) {
-				console.error(`[Error 2/3] NAT64 connection failed for ${addressRemote}:${portRemote}:`, nat64Error.stack || nat64Error.message || nat64Error);
-				
-				// --- 尝试 3: 回退到 ProxyIP ---
-				if (fallbackProxyIP) {
-					log(`[Attempt 3/3] NAT64 failed, attempting to fall back to proxyIP: ${fallbackProxyIP}:${portRemote}`);
-					try {
-						tcpSocket = connect({
-							hostname: fallbackProxyIP,
-							port: portRemote,
-						});
-						await tcpSocket.opened;
-						log(`[Success 3/3] Successfully connected via proxyIP to ${fallbackProxyIP}:${portRemote}`);
-					} catch (proxyIPError) {
-						console.error(`[Error 3/3] Fallback to proxyIP failed for ${fallbackProxyIP}:${portRemote}:`, proxyIPError.stack || proxyIPError.message || proxyIPError);
-						safeCloseWebSocket(webSocket); // 所有尝试都失败，关闭 WebSocket
-						return; // 退出函数，不进行后续操作
-					}
-				} else {
-					console.error(`[Error] NAT64 failed and no fallback proxyIP provided. Closing WebSocket.`);
-					safeCloseWebSocket(webSocket); // 没有回退选项，直接关闭 WebSocket
-					return; // 退出函数
-				}
-			}
-		} else { // 如果 NAT64 未开启，则直接跳过 NAT64 尝试，进入 ProxyIP 尝试
-			log(`[Skipping NAT64] NAT64 is disabled, skipping attempt.`);
-			// --- 尝试 3: 回退到 ProxyIP ---
-			if (fallbackProxyIP) {
-				log(`[Attempt 2/2] Direct failed and NAT64 disabled, attempting to fall back to proxyIP: ${fallbackProxyIP}:${portRemote}`);
-				try {
-					tcpSocket = connect({
-						hostname: fallbackProxyIP,
-						port: portRemote,
-					});
-					await tcpSocket.opened;
-					log(`[Success 2/2] Successfully connected via proxyIP to ${fallbackProxyIP}:${portRemote}`);
-				} catch (proxyIPError) {
-					console.error(`[Error 2/2] Fallback to proxyIP failed for ${fallbackProxyIP}:${portRemote}:`, proxyIPError.stack || proxyIPError.message || proxyIPError);
-					safeCloseWebSocket(webSocket); // 所有尝试都失败，关闭 WebSocket
-					return; // 退出函数，不进行后续操作
-				}
-			} else {
-				console.error(`[Error] Direct connection failed, NAT64 is disabled, and no fallback proxyIP provided. Closing WebSocket.`);
-				safeCloseWebSocket(webSocket); // 没有回退选项，直接关闭 WebSocket
-				return; // 退出函数
-			}
-		}
-	}
+        } catch (directError) {
+            console.error(`[Error 1/3] Direct connection failed for ${addressRemote}:${portRemote}:`, directError.stack || directError.message || directError);
+            
+            // --- 尝试 2: 回退到 NAT64 (如果开启) ---
+            if (enableNAT64) { // 检查 NAT64 是否开启
+                try {
+                    log(`[Attempt 2/3] Direct failed, attempting NAT64 connection to ${addressRemote}:${portRemote}`);
+                    // connectViaNAT64 应该处理 IPv4/域名到 NAT64 IPv6 的转换和连接
+                    const { tcpSocket: nat64Socket } = await connectViaNAT64(addressRemote, portRemote);
+                    tcpSocket = nat64Socket;
+                    log(`[Success 2/3] Successfully connected via NAT64 to ${addressRemote}:${portRemote}`);
+
+                } catch (nat64Error) {
+                    console.error(`[Error 2/3] NAT64 connection failed for ${addressRemote}:${portRemote}:`, nat64Error.stack || nat64Error.message || nat64Error);
+                    
+                    // --- 尝试 3: 回退到 ProxyIP ---
+                    if (fallbackProxyIP) {
+                        log(`[Attempt 3/3] NAT64 failed, attempting to fall back to proxyIP: ${fallbackProxyIP}:${portRemote}`);
+                        try {
+                            tcpSocket = connect({
+                                hostname: fallbackProxyIP,
+                                port: portRemote,
+                            });
+                            await tcpSocket.opened;
+                            log(`[Success 3/3] Successfully connected via proxyIP to ${fallbackProxyIP}:${portRemote}`);
+                        } catch (proxyIPError) {
+                            console.error(`[Error 3/3] Fallback to proxyIP failed for ${fallbackProxyIP}:${portRemote}:`, proxyIPError.stack || proxyIPError.message || proxyIPError);
+                            safeCloseWebSocket(webSocket); // 所有尝试都失败，关闭 WebSocket
+                            return; // 退出函数，不进行后续操作
+                        }
+                    } else {
+                        console.error(`[Error] NAT64 failed and no fallback proxyIP provided. Closing WebSocket.`);
+                        safeCloseWebSocket(webSocket); // 没有回退选项，直接关闭 WebSocket
+                        return; // 退出函数
+                    }
+                }
+            } else { // 如果 NAT64 未开启，则直接跳过 NAT64 尝试，进入 ProxyIP 尝试
+                log(`[Skipping NAT64] NAT64 is disabled, skipping attempt.`);
+                // --- 尝试 3: 回退到 ProxyIP ---
+                if (fallbackProxyIP) {
+                    log(`[Attempt 2/2] Direct failed and NAT64 disabled, attempting to fall back to proxyIP: ${fallbackProxyIP}:${portRemote}`);
+                    try {
+                        tcpSocket = connect({
+                            hostname: fallbackProxyIP,
+                            port: portRemote,
+                        });
+                        await tcpSocket.opened;
+                        log(`[Success 2/2] Successfully connected via proxyIP to ${fallbackProxyIP}:${portRemote}`);
+                    } catch (proxyIPError) {
+                        console.error(`[Error 2/2] Fallback to proxyIP failed for ${fallbackProxyIP}:${portRemote}:`, proxyIPError.stack || proxyIPError.message || proxyIPError);
+                        safeCloseWebSocket(webSocket); // 所有尝试都失败，关闭 WebSocket
+                        return; // 退出函数，不进行后续操作
+                    }
+                } else {
+                    console.error(`[Error] Direct connection failed, NAT64 is disabled, and no fallback proxyIP provided. Closing WebSocket.`);
+                    safeCloseWebSocket(webSocket); // 没有回退选项，直接关闭 WebSocket
+                    return; // 退出函数
+                }
+            }
+        }
+    }
 
     // 如果上面任何一种方式成功建立了 tcpSocket
     if (tcpSocket) {
@@ -787,4 +824,36 @@ async function connectViaNAT64(address, port) {
     });
     await tcpSocket.opened;
     return { tcpSocket }; 
-			}
+}
+
+/**
+ * Checks if a given address (domain or IP) matches any of the proxydomains.
+ * Handles wildcard prefixes like "*.example.com".
+ * @param {string} address The address to check (e.g., "www.twitch.tv" or "192.168.1.1").
+ * @returns {boolean} True if the address should force NAT64, false otherwise.
+ */
+function isForcedNAT64Domain(address) {
+    const ipv4Regex = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+    const ipv6Regex = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$|^[0-9a-fA-F]{1,4}(::[0-9a-fA-F]{1,4}){1,6}$/; // Simple IPv6 regex
+
+    if (ipv4Regex.test(address) || ipv6Regex.test(address)) {
+        return false; // IPs are not covered by domain rules for forced NAT64
+    }
+
+    for (const pattern of proxydomains) {
+        if (pattern.startsWith('*')) {
+            const suffix = pattern.substring(1);
+            if (address.endsWith(suffix)) {
+                // Ensure it's a full subdomain match or exact match if suffix is empty
+                if (address.length === suffix.length || address[address.length - suffix.length - 1] === '.') {
+                    return true;
+                }
+            }
+        } else {
+            if (address === pattern) {
+                return true;
+            }
+        }
+    }
+    return false;
+	}
