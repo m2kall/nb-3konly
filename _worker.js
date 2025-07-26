@@ -798,4 +798,4 @@ async function connectViaNAT64(address, port) {
     });
     await tcpSocket.opened;
     return { tcpSocket }; 
-			}
+}
