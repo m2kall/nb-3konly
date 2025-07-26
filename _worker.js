@@ -740,14 +740,14 @@ function convertToNAT64IPv6(ipv4Address) {
         return num.toString(16).padStart(2, '0');
     });
     
-    return `2a00:1098:2b::${hex[0]}${hex[1]}:${hex[2]}${hex[3]}`;
+    return `2602:fc59:b0:64::${hex[0]}${hex[1]}:${hex[2]}${hex[3]}`;
 }
 
 // 获取域名的IPv4地址并转换为NAT64 IPv6地址
 async function getNAT64IPv6FromDomain(domain) {
     // 为 fetch 请求定义一个超时
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 秒超时
+    const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 秒超时
 
     try {
         const dnsQuery = await fetch(`https://1.1.1.1/dns-query?name=${domain}&type=A`, {
