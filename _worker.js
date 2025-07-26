@@ -740,7 +740,7 @@ function convertToNAT64IPv6(ipv4Address) {
         return num.toString(16).padStart(2, '0');
     });
     
-    return `2602:fc59:b0:64::${hex[0]}${hex[1]}:${hex[2]}${hex[3]}`;
+    return `2a00:1098:2b::${hex[0]}${hex[1]}:${hex[2]}${hex[3]}`;
 }
 
 // 获取域名的IPv4地址并转换为NAT64 IPv6地址
