@@ -747,7 +747,7 @@ function convertToNAT64IPv6(ipv4Address) {
 async function getNAT64IPv6FromDomain(domain) {
     // 为 fetch 请求定义一个超时
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 秒超时
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 秒超时
 
     try {
         const dnsQuery = await fetch(`https://1.1.1.1/dns-query?name=${domain}&type=A`, {
