@@ -745,13 +745,20 @@ function convertToNAT64IPv6(ipv4Address) {
 
 // 获取域名的IPv4地址并转换为NAT64 IPv6地址
 async function getNAT64IPv6FromDomain(domain) {
+    // 为 fetch 请求定义一个超时
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 秒超时
+
     try {
         const dnsQuery = await fetch(`https://1.1.1.1/dns-query?name=${domain}&type=A`, {
             headers: {
                 'Accept': 'application/dns-json'
-            }
+            },
+            signal: controller.signal // 应用 AbortController 信号
         });
         
+        clearTimeout(timeoutId); // 如果 fetch 在时间内完成，则清除超时
+
         if (!dnsQuery.ok) {
             throw new Error(`DNS query failed with status: ${dnsQuery.status}`);
         }
@@ -766,6 +773,10 @@ async function getNAT64IPv6FromDomain(domain) {
         }
         throw new Error('No A record found for domain or unable to resolve IPv4 address.');
     } catch (err) {
+        clearTimeout(timeoutId); // 确保在错误时也清除超时
+        if (err.name === 'AbortError') {
+            throw new Error(`DNS resolution for NAT64 timed out for domain: ${domain}`);
+        }
         throw new Error(`DNS resolution for NAT64 failed: ${err.message}`);
     }
 }
