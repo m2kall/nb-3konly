@@ -15,7 +15,7 @@ let NAT64 = true; // 默认开启 NAT64
 // --- 结束新增 ---
 
 // 定义伪装页面的URL和处理函数
-let disguiseUrl = 'https://libretv.cmliussss.dedyn.io/'; 
+let disguiseUrl = 'https://wanzhan.cc/'; 
 
 async function serveDisguisePage() {
   try {
