@@ -14,6 +14,29 @@ let proxyIP = 'proxyip.zone.id'; // 确保这里有默认值或者通过环境�
 let NAT64 = true; // 默认开启 NAT64
 // --- 结束新增 ---
 
+// 定义伪装页面的URL和处理函数
+let disguiseUrl = 'https://libretv.cmliussss.dedyn.io/'; 
+
+async function serveDisguisePage() {
+  try {
+    const res = await fetch(disguiseUrl, { cf: { cacheEverything: true } });
+    return new Response(res.body, res);
+  } catch {
+    return new Response(
+      `<!DOCTYPE html>
+       <html>
+         <head><title>Welcome</title></head>
+         <body><h1>Cloudflare Worker 已部署成功</h1>
+         <p>此页面为静态伪装页面（远程加载失败）。</p></body>
+       </html>`,
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' }
+      }
+    );
+  }
+}
+
 if (!isValidUUID(userID)) {
 	throw new Error('uuid is not valid');
 }
@@ -70,7 +93,8 @@ export default {
 				const url = new URL(request.url);
 				switch (url.pathname) {
 					case '/':
-						return new Response(JSON.stringify(request.cf), { status: 200 });
+						// 当访问根路径时，返回伪装页面
+						return serveDisguisePage(); 
 					case `/${userID}`: {
 						// 根据 隐藏 变量决定是否显示订阅配置
 						if (隐藏) {
