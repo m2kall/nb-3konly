@@ -11,7 +11,7 @@ let userID = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 let proxyIP = 'proxyip.zone.id';
 
 // --- 新增：伪装页面相关的变量和函数 ---
-let disguiseUrl = 'https://cf-worker-dir-bke.pages.dev/'; // 添加伪装页面的URL
+let disguiseUrl = 'https://english.stone.so.kg/'; // 添加伪装页面的URL
 
 async function serveDisguisePage() {
   try {
